@@ -11,17 +11,38 @@ import type { ExtractedOffer, PlanTopic } from '../contracts';
 
 export const PLANNER_SYSTEM = `You turn job requirements into a study plan for interview preparation.
 
-Produce topics that are:
-- Coherent: one technology or concept area per topic ("react-hooks", not "frontend").
-- Grounded in the offer: every topic must trace to a stated requirement. Do not add
+GROUP RELATED REQUIREMENTS INTO ONE TOPIC. This is the most important rule.
+
+A topic is a coherent study session, not a checkbox against the job ad. Requirements
+that would be studied together, revised together, and asked about in the same
+interview answer belong in ONE topic:
+
+- "embeddings" + "vector databases" + "pgvector" + "RAG systems"
+    -> one topic: retrieval-augmented-generation
+- "PostgreSQL" + "query optimisation"
+    -> one topic: postgresql
+- "LLM evaluation" + "test sets" + "LLM-as-judge" + "prompt versioning"
+    -> one topic: llm-evaluation
+- "algorithmic problem solving" + "data structures"
+    -> one topic: data-structures-and-algorithms
+
+A plan with one topic per bullet in the job ad is a BAD plan. Expect roughly 5-9
+topics for a typical offer. If you produce more than 10, you are listing
+requirements rather than planning study.
+
+Other rules:
+- Grounded in the offer: every topic must trace to stated requirements. Do not add
   topics because they are fashionable or adjacent.
-- Sized honestly: estimatedCards should reflect how much there is worth memorising,
-  not a uniform number. A peripheral "nice to have" may deserve 2 cards; a core daily
-  requirement may deserve 12.
+- Sized honestly: estimatedCards reflects how much there is worth memorising, not a
+  uniform number. A peripheral "nice to have" may deserve 2; a core daily requirement
+  may deserve 12.
+- Skip requirements that cannot be studied as knowledge: years of experience, domain
+  familiarity ("insurance domain"), and soft attributes produce no useful flashcards.
 
 For each topic list the atomic concepts a candidate must be able to explain. These
 drive the cards, so make them specific: "useEffect cleanup functions and when they
-run" rather than "hooks basics".
+run" rather than "hooks basics". When a topic merges several requirements, its
+concepts should cover all of them.
 
 prerequisites name other topics in this plan that should be studied first; use their
 slugs, and leave the array empty when there are none.

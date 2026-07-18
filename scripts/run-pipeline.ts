@@ -11,10 +11,14 @@
 import { readFileSync } from 'node:fs';
 
 import { db } from '../src/lib/db';
+import { flushTelemetry, initTelemetry } from '../src/lib/telemetry';
 import { defaultDeps, runToCompletion } from '../src/orchestrator/run';
 import { createRun, getDraftCards, loadRun } from '../src/orchestrator/state';
 
 async function main() {
+  const traced = await initTelemetry();
+  if (traced) console.log('tracing to Langfuse\n');
+
   const args = process.argv.slice(2);
   const textFlag = args.indexOf('--text');
   const localText = textFlag !== -1 ? readFileSync(args[textFlag + 1], 'utf8') : null;
@@ -75,7 +79,10 @@ async function main() {
   void outcome;
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+main()
+  .then(flushTelemetry)
+  .catch(async (error) => {
+    console.error(error);
+    await flushTelemetry();
+    process.exit(1);
+  });
