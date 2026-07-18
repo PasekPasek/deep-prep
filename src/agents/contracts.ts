@@ -23,14 +23,38 @@ export const ExtractedOffer = z.object({
 });
 export type ExtractedOffer = z.infer<typeof ExtractedOffer>;
 
+/**
+ * IMPORTANT — do not add `.int()` or numeric bounds to any schema sent to a model.
+ *
+ * Anthropic's structured output rejects `minimum`/`maximum` on integer properties:
+ *   "[Anthropic] output_config.format.schema: For 'integer' type, properties maximum,
+ *    minimum are not supported"
+ *
+ * and Zod 4 emits those bounds *automatically* for `.int()` — it renders as
+ * `{"type":"integer","minimum":-9007199254740991,"maximum":9007199254740991}`, the JS
+ * safe-integer range. So a bare `.int()` with no explicit constraints is enough to
+ * fail the call. This cost two failed Planner runs before the cause was visible.
+ *
+ * Use plain `z.number()`, state the expectation in `.describe()`, and enforce the real
+ * constraint in code after parsing.
+ */
+export const MIN_CARDS_PER_TOPIC = 1;
+export const MAX_CARDS_PER_TOPIC = 15;
+
 export const PlanTopic = z.object({
   slug: z.string(),
   name: z.string(),
   /** Atomic concepts to cover — these drive how many cards the topic yields. */
   concepts: z.array(z.string()),
   prerequisites: z.array(z.string()),
-  estimatedCards: z.number().int().min(1).max(15),
+  estimatedCards: z
+    .number()
+    .describe(`Whole number of cards this topic warrants, ${MIN_CARDS_PER_TOPIC}-${MAX_CARDS_PER_TOPIC}`),
 });
+
+export function clampEstimatedCards(value: number): number {
+  return Math.min(MAX_CARDS_PER_TOPIC, Math.max(MIN_CARDS_PER_TOPIC, Math.round(value)));
+}
 export type PlanTopic = z.infer<typeof PlanTopic>;
 
 export const Plan = z.object({
@@ -80,11 +104,12 @@ export const RejectionReason = z.enum([
 export type RejectionReason = z.infer<typeof RejectionReason>;
 
 export const CriticVerdict = z.object({
+  // Plain z.number(), not .int() — see the note above PlanTopic.
   /** Indices into the DraftCard[] under review. */
-  accepted: z.array(z.number().int()),
+  accepted: z.array(z.number()),
   rejected: z.array(
     z.object({
-      index: z.number().int(),
+      index: z.number(),
       reason: RejectionReason,
       note: z.string(),
     }),

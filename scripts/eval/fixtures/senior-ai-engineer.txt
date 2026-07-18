@@ -1,0 +1,40 @@
+Senior AI Engineer (LLM Applications)
+Nimbus Data Sp. z o.o. — Kraków / hybrid
+
+About the role
+
+We are building a document intelligence platform used by insurers to process
+claims. You will own the retrieval and generation layer end to end, from ingestion
+pipelines through evaluation harnesses to production monitoring.
+
+Requirements
+
+- 5+ years of commercial software engineering experience
+- Strong TypeScript and Node.js; you are comfortable owning a service in production
+- Hands-on experience building RAG systems: chunking strategies, embeddings, vector
+  databases (we use pgvector on Postgres)
+- Experience with agentic workflows and tool-calling patterns
+- Practical knowledge of LLM evaluation: building test sets, LLM-as-judge, tracking
+  regressions across prompt versions
+- Solid understanding of system design and distributed systems fundamentals
+- Experience with PostgreSQL, including query optimisation
+- Comfortable with algorithmic problem solving and data structures
+
+Nice to have
+
+- Python for data pipelines
+- Experience with observability tooling (we use OpenTelemetry)
+- Kubernetes and infrastructure-as-code
+- Prior work in insurance or fintech domains
+
+Interview process
+
+Four stages: recruiter screen, technical interview covering system design and
+coding, a practical take-home on retrieval quality, and a final behavioural round
+with the engineering director.
+
+What we offer
+
+- 25 000 - 32 000 PLN net B2B depending on experience
+- Hybrid, two days per week in the Kraków office
+- Annual training budget and conference attendance

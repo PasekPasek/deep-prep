@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { renderForPrompt, semanticSearch, toProvenance } from '@/retrieval/semanticSearch';
 
 import { callAgent, type CallMeta } from './call';
-import { DraftCard, Plan, type ExtractedOffer, type PlanTopic } from './contracts';
+import { clampEstimatedCards, DraftCard, Plan, type ExtractedOffer, type PlanTopic } from './contracts';
 import { PLANNER_SYSTEM, plannerPrompt, WRITER_SYSTEM, writerPrompt } from './prompts/generator';
 
 /**
@@ -31,13 +31,25 @@ const TOP_K = 8;
 const MIN_SIMILARITY = 0.35;
 
 export async function planTopics(offer: ExtractedOffer, meta: CallMeta = {}) {
-  return callAgent({
+  const result = await callAgent({
     role: 'planner',
     schema: Plan,
     system: PLANNER_SYSTEM,
     prompt: plannerPrompt(offer),
     meta,
   });
+
+  // The card-count bound cannot be expressed in the schema (see contracts.ts), so it
+  // is enforced here instead.
+  return {
+    ...result,
+    value: {
+      topics: result.value.topics.map((topic) => ({
+        ...topic,
+        estimatedCards: clampEstimatedCards(topic.estimatedCards),
+      })),
+    },
+  };
 }
 
 /** The Writer returns cards; topicSlug and provenance are re-derived in code below. */

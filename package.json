@@ -14,6 +14,7 @@
     "verify:reviews": "tsx --conditions=react-server --env-file=.env.local scripts/verify-reviews.ts",
     "verify:orchestrator": "tsx --conditions=react-server --env-file=.env.local scripts/verify-orchestrator.ts",
     "ingest": "tsx --conditions=react-server --env-file=.env.local scripts/ingest.ts",
+    "pipeline": "tsx --conditions=react-server --env-file=.env.local scripts/run-pipeline.ts",
     "reset:corpus": "tsx --conditions=react-server --env-file=.env.local scripts/reset-corpus.ts",
     "db:types": "supabase gen types typescript --project-id dakccrefybxorlmxxgxm > src/lib/database.types.ts"
   },

@@ -60,7 +60,7 @@ export type Deps = {
   writeCardsForTopic: (topic: PlanTopic, meta: { runId: string }) => Promise<TopicResult>;
 };
 
-const defaultDeps: Deps = {
+export const defaultDeps: Deps = {
   fetchOfferText,
   extractOffer: (text, meta) => extractOffer(text, meta),
   planTopics: (offer, meta) => planTopics(offer, meta),
