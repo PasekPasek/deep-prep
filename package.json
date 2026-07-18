@@ -10,9 +10,11 @@
     "typecheck": "tsc --noEmit",
     "verify:fsrs": "tsx scripts/verify-fsrs.ts",
     "verify:markdown": "tsx scripts/verify-markdown.ts",
+    "verify:retrieval": "tsx --conditions=react-server --env-file=.env.local scripts/verify-retrieval.ts",
     "verify:reviews": "tsx --conditions=react-server --env-file=.env.local scripts/verify-reviews.ts",
     "verify:orchestrator": "tsx --conditions=react-server --env-file=.env.local scripts/verify-orchestrator.ts",
     "ingest": "tsx --conditions=react-server --env-file=.env.local scripts/ingest.ts",
+    "reset:corpus": "tsx --conditions=react-server --env-file=.env.local scripts/reset-corpus.ts",
     "db:types": "supabase gen types typescript --project-id dakccrefybxorlmxxgxm > src/lib/database.types.ts"
   },
   "dependencies": {

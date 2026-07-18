@@ -39,6 +39,78 @@ const HEADING = /^(#{1,6})\s+(.+?)\s*#*\s*$/;
 const FENCE = /^\s*(`{3,}|~{3,})/;
 
 /**
+ * Remove YAML frontmatter.
+ *
+ * Docusaurus-style docs (tech-interview-handbook among them) open with an `---` block
+ * of id/title/description metadata. Left in place it becomes the opening text of the
+ * first section and gets embedded, so retrieval matches on metadata keys rather than
+ * substance — observed live: a "dynamic programming" query returned a section whose
+ * body began "--- id: dynamic-programming title: ...".
+ */
+export function stripFrontmatter(markdown: string): string {
+  const match = /^﻿?---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(markdown);
+  return match ? markdown.slice(match[0].length) : markdown;
+}
+
+/**
+ * Remove non-prose markup that markdown files carry for the sake of the site that
+ * renders them.
+ *
+ * Docusaurus pages follow their frontmatter with a `<head>` block of social/meta tags.
+ * Embedded, it outranks real content: before this, "negotiating a software engineering
+ * job offer" returned an og:image meta block at 0.561 as its TOP hit, ahead of the
+ * actual negotiation guidance. Import statements and HTML comments are stripped for
+ * the same reason — they carry no answerable content but do carry keywords.
+ */
+export function stripMarkup(markdown: string): string {
+  // Applied only outside fenced code, so an HTML question that *demonstrates* <head>
+  // in a code sample keeps its example intact. Stripping the whole document would
+  // silently gut exactly the content this corpus exists to teach.
+  const lines = markdown.split(/\r?\n/);
+  const out: string[] = [];
+  let buffer: string[] = [];
+  let fence: string | null = null;
+
+  const flushProse = () => {
+    if (buffer.length > 0) {
+      out.push(stripProseMarkup(buffer.join('\n')));
+      buffer = [];
+    }
+  };
+
+  for (const line of lines) {
+    const fenceMatch = FENCE.exec(line);
+    if (fenceMatch) {
+      const marker = fenceMatch[1];
+      if (fence === null) {
+        flushProse();
+        fence = marker[0].repeat(3);
+      } else if (marker.startsWith(fence)) {
+        fence = null;
+      }
+      out.push(line);
+      continue;
+    }
+
+    if (fence === null) buffer.push(line);
+    else out.push(line);
+  }
+
+  flushProse();
+  return out.join('\n');
+}
+
+function stripProseMarkup(text: string): string {
+  return text
+    .replace(/<head>[\s\S]*?<\/head>/gi, '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    // MDX component imports, e.g. `import TOCInline from '@theme/TOCInline';`
+    .replace(/^import\s+.+\s+from\s+['"].+['"];?\s*$/gm, '');
+}
+
+/**
  * Split a document into raw sections, one per heading.
  *
  * Fenced code blocks are tracked so that a `# comment` inside a shell example is not
@@ -46,7 +118,7 @@ const FENCE = /^\s*(`{3,}|~{3,})/;
  * of bash and python snippets.
  */
 export function parseMarkdownSections(markdown: string): RawSection[] {
-  const lines = markdown.split(/\r?\n/);
+  const lines = stripMarkup(stripFrontmatter(markdown)).split(/\r?\n/);
   const sections: RawSection[] = [];
 
   const stack: string[] = [];

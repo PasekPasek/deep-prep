@@ -18,8 +18,17 @@ import { PLANNER_SYSTEM, plannerPrompt, WRITER_SYSTEM, writerPrompt } from './pr
  */
 
 const TOP_K = 8;
-/** Below this cosine similarity a "hit" is noise that would only mislead the Writer. */
-const MIN_SIMILARITY = 0.3;
+/**
+ * Below this cosine similarity a "hit" is noise that would only mislead the Writer.
+ *
+ * Calibrated against the live corpus rather than guessed: queries the corpus genuinely
+ * covers score 0.51-0.61 ("system design interview" 0.556, "negotiating an offer"
+ * 0.547, "dynamic programming" 0.606), while a query it does NOT cover ("React hooks
+ * and useEffect cleanup", absent from an interview-process handbook) topped out at
+ * 0.298 with unrelated sections. 0.35 sits in the empty band between the two, so an
+ * uncovered topic yields no cards instead of confidently wrong ones.
+ */
+const MIN_SIMILARITY = 0.35;
 
 export async function planTopics(offer: ExtractedOffer, meta: CallMeta = {}) {
   return callAgent({

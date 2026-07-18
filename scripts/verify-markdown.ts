@@ -82,6 +82,50 @@ console.log('\n== ord is unique and sequential ==');
 const ords = big.map((s) => s.ord);
 check('ord sequential from 0', ords.every((o, i) => o === i), `[${ords.join(',')}]`);
 
+console.log('\n== YAML frontmatter is stripped ==');
+const fm = parseMarkdownSections(`---
+id: dynamic-programming
+title: Dynamic programming cheatsheet
+description: Learn the patterns
+---
+
+# Dynamic Programming
+
+Memoise overlapping subproblems.
+`);
+console.log(`  first section starts: "${fm[0].content.slice(0, 40)}…"`);
+check('frontmatter keys are gone', !fm.some((s) => s.content.includes('id: dynamic-programming')));
+check('body survives', fm[0].content.includes('Memoise overlapping subproblems'));
+check('heading still parsed', fm[0].headingPath.join('>') === 'Dynamic Programming', fm[0].headingPath.join('>'));
+
+console.log('\n== HTML head / meta blocks are stripped ==');
+const head = parseMarkdownSections(`---
+title: Negotiation
+---
+
+<head>
+  <meta property="og:image" content="https://example.com/social/negotiation.png" />
+</head>
+
+import TOCInline from '@theme/TOCInline';
+
+# Negotiation
+
+Always negotiate your offer.
+`);
+console.log(`  sections: ${head.length}, first: "${head[0]?.content.slice(0, 45)}…"`);
+check('og:image meta is gone', !head.some((s) => s.content.includes('og:image')));
+check('MDX import is gone', !head.some((s) => s.content.includes('@theme/TOCInline')));
+check('real content survives', head.some((s) => s.content.includes('Always negotiate your offer')));
+
+console.log('\n== code fences containing HTML are NOT stripped ==');
+const fencedHtml = parseMarkdownSections('# Ex\n\n```html\n<head><title>keep me</title></head>\n```\n');
+check('example HTML inside a fence survives', fencedHtml[0].content.includes('keep me'), fencedHtml[0].content.slice(0, 60));
+
+console.log('\n== a --- rule mid-document is NOT frontmatter ==');
+const rule = parseMarkdownSections(`# Title\n\nBefore.\n\n---\n\nAfter.\n`);
+check('content preserved around horizontal rule', rule[0].content.includes('Before') && rule[0].content.includes('After'));
+
 console.log('\n== document title ==');
 check('uses first h1', documentTitle('# Real Title\n\n## Other', 'x/react.md') === 'Real Title');
 check('falls back to filename', documentTitle('no headings here', 'notes/react-hooks.md') === 'react-hooks');
