@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "ingest": "tsx --env-file=.env.local scripts/ingest.ts",
+    "db:types": "supabase gen types typescript --project-id dakccrefybxorlmxxgxm > src/lib/database.types.ts"
   },
   "dependencies": {
     "@langfuse/client": "^5.9.1",
@@ -26,6 +29,7 @@
     "radix-ui": "^1.6.2",
     "react": "19.2.4",
     "react-dom": "19.2.4",
+    "server-only": "^0.0.1",
     "shadcn": "^4.13.0",
     "tailwind-merge": "^3.6.0",
     "ts-fsrs": "^5.4.1",
