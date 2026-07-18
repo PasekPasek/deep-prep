@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
+    "verify:fsrs": "tsx scripts/verify-fsrs.ts",
     "ingest": "tsx --env-file=.env.local scripts/ingest.ts",
     "db:types": "supabase gen types typescript --project-id dakccrefybxorlmxxgxm > src/lib/database.types.ts"
   },

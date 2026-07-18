@@ -193,9 +193,12 @@ export type Database = {
           card_id: string
           difficulty: number | null
           due: string
+          elapsed_days: number
           lapses: number | null
           last_review: string | null
+          learning_steps: number
           reps: number | null
+          scheduled_days: number
           stability: number | null
           state: number
         }
@@ -203,9 +206,12 @@ export type Database = {
           card_id: string
           difficulty?: number | null
           due: string
+          elapsed_days?: number
           lapses?: number | null
           last_review?: string | null
+          learning_steps?: number
           reps?: number | null
+          scheduled_days?: number
           stability?: number | null
           state?: number
         }
@@ -213,9 +219,12 @@ export type Database = {
           card_id?: string
           difficulty?: number | null
           due?: string
+          elapsed_days?: number
           lapses?: number | null
           last_review?: string | null
+          learning_steps?: number
           reps?: number | null
+          scheduled_days?: number
           stability?: number | null
           state?: number
         }
