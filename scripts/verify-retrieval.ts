@@ -9,11 +9,19 @@ import { db } from '../src/lib/db';
 import { describeHit, semanticSearch } from '../src/retrieval/semanticSearch';
 
 const QUERIES = [
-  'React hooks and useEffect cleanup',
+  // Interview-process topics — covered by tech-interview-handbook.
   'system design interview: designing a URL shortener',
   'behavioural interview: tell me about a conflict with a teammate',
   'negotiating a software engineering job offer',
   'dynamic programming interview questions',
+  // AI/LLM topics — these returned nothing until the ai-devs-4 notes were ingested,
+  // which is what made the corpus gap concrete rather than theoretical.
+  'RAG systems: chunking strategies and embeddings',
+  'agentic workflows and tool calling patterns',
+  'LLM evaluation, test sets and LLM-as-judge',
+  'vector databases and pgvector',
+  // Still uncovered by either source — the control case for the similarity floor.
+  'React hooks and useEffect cleanup',
 ];
 
 async function main() {

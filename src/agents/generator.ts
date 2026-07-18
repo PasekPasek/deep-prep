@@ -2,7 +2,8 @@ import 'server-only';
 
 import { z } from 'zod';
 
-import { renderForPrompt, semanticSearch, toProvenance } from '@/retrieval/semanticSearch';
+import { multilingualSearch } from '@/retrieval/multilingualSearch';
+import { renderForPrompt, toProvenance } from '@/retrieval/semanticSearch';
 
 import { callAgent, type CallMeta } from './call';
 import { clampEstimatedCards, DraftCard, Plan, type ExtractedOffer, type PlanTopic } from './contracts';
@@ -82,7 +83,9 @@ export async function writeCardsForTopic(
   meta: CallMeta = {},
 ): Promise<TopicResult> {
   const query = `${topic.name}. ${topic.concepts.join('. ')}`;
-  const hits = (await semanticSearch(query, TOP_K)).filter((h) => h.similarity >= MIN_SIMILARITY);
+  const hits = (await multilingualSearch(query, TOP_K, meta)).filter(
+    (h) => h.similarity >= MIN_SIMILARITY,
+  );
 
   if (hits.length === 0) {
     return {

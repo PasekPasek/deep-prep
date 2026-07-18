@@ -90,7 +90,12 @@ Card kinds:
 - coding_task: a small concrete problem; back gives the approach and key code.
 
 Prefer fewer excellent cards to more mediocre ones. If the sources only support three
-good cards, write three — the requested count is a ceiling, not a quota.`;
+good cards, write three — the requested count is a ceiling, not a quota.
+
+LANGUAGE: always write cards in English, even when the source material is in another
+language. The corpus is mixed-language; the card library is not. Translate the meaning
+faithfully — do not invent detail to smooth over a passage you found ambiguous, and
+keep technical terms in their standard English form (not literal translations).`;
 
 export function writerPrompt(topic: PlanTopic, sources: string): string {
   return `Write flashcards for the topic "${topic.name}" (slug: ${topic.slug}).

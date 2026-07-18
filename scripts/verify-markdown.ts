@@ -129,6 +129,15 @@ check('content preserved around horizontal rule', rule[0].content.includes('Befo
 console.log('\n== document title ==');
 check('uses first h1', documentTitle('# Real Title\n\n## Other', 'x/react.md') === 'Real Title');
 check('falls back to filename', documentTitle('no headings here', 'notes/react-hooks.md') === 'react-hooks');
+check(
+  'prefers frontmatter title over ugly filename',
+  documentTitle("---\ntitle: S05E02 — Zestaw narzędzi\nspace_id: 2476415\n---\n\n## Film\n", 'tasks/x/lesson/s05e02-zestaw-narzedzi-1775085192.md') === 'S05E02 — Zestaw narzędzi',
+  documentTitle("---\ntitle: S05E02 — Zestaw narzędzi\nspace_id: 2476415\n---\n\n## Film\n", 'x.md'),
+);
+check(
+  'strips quotes from frontmatter title',
+  documentTitle("---\ntitle: 'Quoted Title'\n---\n\ntext", 'x.md') === 'Quoted Title',
+);
 
 console.log(failures === 0 ? '\nAll markdown checks passed.\n' : `\n${failures} CHECK(S) FAILED\n`);
 process.exit(failures === 0 ? 0 : 1);

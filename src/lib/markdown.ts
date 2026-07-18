@@ -235,11 +235,27 @@ function splitToBand(content: string): string[] {
   return pieces.filter((p) => p.trim().length > 0);
 }
 
-/** Title for a document: its first h1 if present, else the filename. */
+/**
+ * Title for a document: frontmatter `title:` if present, else the first h1, else the
+ * filename.
+ *
+ * Frontmatter comes first because the files that have it are usually the ones whose
+ * filenames are useless — exported course articles named
+ * "s01e01-programowanie-interakcji-z-modelem-jezykowym-1773230257" carry a clean
+ * "S01E01 — Programowanie interakcji z modelem językowym" in their metadata. The title
+ * ends up in every provenance label, so it is worth reading properly.
+ */
 export function documentTitle(markdown: string, path: string): string {
-  for (const line of markdown.split(/\r?\n/)) {
+  const frontmatter = /^﻿?---\r?\n([\s\S]*?)\r?\n---/.exec(markdown);
+  if (frontmatter) {
+    const title = /^title:\s*(.+?)\s*$/m.exec(frontmatter[1]);
+    if (title) return title[1].replace(/^['"]|['"]$/g, '').trim();
+  }
+
+  for (const line of stripFrontmatter(markdown).split(/\r?\n/)) {
     const heading = HEADING.exec(line);
     if (heading && heading[1].length === 1) return heading[2].trim();
   }
+
   return path.replace(/\.mdx?$/, '').split('/').pop() ?? path;
 }

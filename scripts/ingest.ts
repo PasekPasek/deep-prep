@@ -49,6 +49,10 @@ type Args = {
   license: string;
   dryRun: boolean;
   includeMeta: boolean;
+  /** Only ingest paths matching this regex — for curating a subset of a notes tree. */
+  include?: RegExp;
+  /** Skip paths matching this regex, applied after --include. */
+  exclude?: RegExp;
   limit?: number;
 };
 
@@ -69,6 +73,8 @@ function parseArgs(argv: string[]): Args {
       case '--limit': args.limit = Number(value()); break;
       case '--dry-run': args.dryRun = true; break;
       case '--include-meta': args.includeMeta = true; break;
+      case '--include': args.include = new RegExp(value()); break;
+      case '--exclude': args.exclude = new RegExp(value()); break;
       default: throw new Error(`Unknown argument: ${flag}`);
     }
   }
@@ -81,26 +87,45 @@ function parseArgs(argv: string[]): Args {
   return args;
 }
 
-function listMarkdown(root: string, includeMeta: boolean): { files: string[]; skipped: string[] } {
+function listMarkdown(root: string, args: Args): { files: string[]; skipped: string[] } {
   const files: string[] = [];
   const skipped: string[] = [];
   const walk = (dir: string) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       if (entry.isDirectory()) {
         if (!SKIP_DIRS.has(entry.name)) walk(join(dir, entry.name));
-      } else if (/\.mdx?$/i.test(entry.name)) {
-        const full = join(dir, entry.name);
-        if (!includeMeta && SKIP_FILES.some((re) => re.test(entry.name))) {
-          skipped.push(full);
-        } else {
-          files.push(full);
-        }
+        continue;
       }
+      if (!/\.mdx?$/i.test(entry.name)) continue;
+
+      const full = join(dir, entry.name);
+      const relative_ = full.slice(root.length).replace(/^[/\\]/, '');
+
+      if (args.include && !args.include.test(relative_)) continue;
+      if (args.exclude?.test(relative_)) {
+        skipped.push(full);
+        continue;
+      }
+      if (!args.includeMeta && SKIP_FILES.some((re) => re.test(entry.name))) {
+        skipped.push(full);
+        continue;
+      }
+      files.push(full);
     }
   };
   walk(root);
   // Stable order so `ord` is reproducible between runs.
   return { files: files.sort(), skipped: skipped.sort() };
+}
+
+/**
+ * Video transcripts are unusable as flashcard sources: conversational, repetitive, and
+ * carrying no structure a section can be built around. Detected by their timestamp
+ * markers rather than by filename, since naming is inconsistent.
+ */
+function isTranscript(markdown: string): boolean {
+  const timestamps = markdown.match(/^\*\d{2}:\d{2}\*$/gm);
+  return (timestamps?.length ?? 0) > 5;
 }
 
 function cloneRepo(spec: string): { root: string; url: string; cleanup: () => void } {
@@ -139,25 +164,38 @@ async function main() {
   }
 
   try {
-    const listed = listMarkdown(root, args.includeMeta);
+    const listed = listMarkdown(root, args);
     let files = listed.files;
     if (args.limit) files = files.slice(0, args.limit);
     console.log(`Found ${files.length} markdown file(s) under ${root}`);
     if (listed.skipped.length > 0) {
       const names = listed.skipped.map((f) => relative(root, f).split(sep).join('/'));
-      console.log(`Skipped ${names.length} boilerplate file(s): ${names.join(', ')} (use --include-meta to keep)`);
+      console.log(
+        `Skipped ${names.length} file(s): ${names.slice(0, 5).join(', ')}` +
+          (names.length > 5 ? ` … +${names.length - 5} more` : ''),
+      );
     }
 
     // ---- parse ----
     type Parsed = { path: string; title: string; sections: Section[] };
     const parsed: Parsed[] = [];
+    let transcripts = 0;
     for (const file of files) {
       const markdown = readFileSync(file, 'utf8');
       const path = relative(root, file).split(sep).join('/');
+
+      if (isTranscript(markdown)) {
+        transcripts++;
+        continue;
+      }
+
       const sections = normalizeSections(parseMarkdownSections(markdown));
       if (sections.length > 0) {
         parsed.push({ path, title: documentTitle(markdown, path), sections });
       }
+    }
+    if (transcripts > 0) {
+      console.log(`Skipped ${transcripts} video transcript(s) — unusable as flashcard sources`);
     }
 
     const totalSections = parsed.reduce((n, d) => n + d.sections.length, 0);
