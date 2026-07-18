@@ -79,15 +79,37 @@ resume after a crash or redeploy.
 
 | Concern | Choice | Notes |
 |---|---|---|
-| Framework | Next.js 15 (App Router, TypeScript, strict) | deployed on Vercel |
-| AI layer | Vercel AI SDK + `@openrouter/ai-sdk-provider` | `generateObject` + Zod everywhere |
+| Framework | Next.js 16 (App Router, TypeScript, strict) | deployed on Vercel; Node ≥ 20.9 |
+| AI layer | Vercel AI SDK 7 + `@openrouter/ai-sdk-provider` | `generateText` + `Output.object({ schema })` + Zod everywhere |
 | Models | OpenRouter | per-agent model map in `src/lib/models.ts` |
-| DB | Supabase (Postgres + pgvector) | also stores agent state (runs, scratchpad) |
+| Embeddings | OpenAI `text-embedding-3-small` (1536), **direct OpenAI API** | OpenRouter serves no embedding models |
+| DB | Supabase (Postgres + pgvector, HNSW indexes) | also stores agent state (runs, scratchpad) |
 | Spaced repetition | `ts-fsrs` | do NOT implement FSRS manually |
 | Observability | Langfuse (cloud free tier) | tracing from day 1, every LLM call |
 | Auth | Auth.js (NextAuth v5) + Google provider | single-user allowlist, see §8 |
 | Web research | Tavily API, Context7 MCP, Stack Overflow via search | layer 3 |
 | Styling | Tailwind + shadcn/ui | keep UI simple, function over form |
+
+### Verified API decisions (checked against current docs — do not "fix" these back)
+
+These differ from the project's original draft because the ecosystem moved. Each was
+verified against live documentation before being written down:
+
+1. **Next.js 16, not 15.** Request APIs are async (`await params`, `await cookies()`).
+   Route protection uses **`src/proxy.ts`** (exporting `auth` as `proxy` + an
+   `authorized` callback) — `middleware.ts` is the old pattern.
+2. **AI SDK 7 with `generateText` + `Output.object`.** `generateObject` is deprecated
+   (removed in a future major) and `experimental_output` no longer exists. Structured
+   results arrive as `result.output`, not `result.object`.
+3. **Embeddings go direct to OpenAI.** OpenRouter's model list contains no embedding
+   models, so `OPENAI_API_KEY` is required, not optional.
+4. **pgvector indexes use HNSW**, not `ivfflat` — current Supabase guidance for
+   read-heavy semantic search. Similarity search runs through SQL functions
+   (`match_sections`, `match_cards`) called via `.rpc()`.
+5. **Langfuse tracing uses the AI SDK 7 integration** (stable since
+   `@langfuse/vercel-ai-sdk@5.9.0`): register `LangfuseVercelAiSdkIntegration` once via
+   `registerTelemetry()` in `instrumentation.ts`, with `LangfuseSpanProcessor` exporting
+   spans. The older `experimental_telemetry: { isEnabled: true }` flag was the v6 way.
 
 **Orchestration is hand-written TypeScript.** No LangGraph/LangChain. Rationale: the
 pipeline is linear with one revision loop; custom orchestration (state machine +
@@ -168,7 +190,7 @@ create table sections (
   ord int,
   embedding vector(1536)               -- per SECTION, not small chunks
 );
-create index on sections using ivfflat (embedding vector_cosine_ops);
+create index on sections using hnsw (embedding vector_cosine_ops);
 
 -- ===== Offers & Cards (global pool, N:M) =====
 create table offers (
@@ -197,7 +219,7 @@ create table cards (
   status text not null default 'active',  -- 'active' | 'suspended'
   created_at timestamptz default now()
 );
-create index on cards using ivfflat (embedding vector_cosine_ops);
+create index on cards using hnsw (embedding vector_cosine_ops);
 
 create table card_offers (
   card_id uuid references cards(id) on delete cascade,
@@ -518,8 +540,9 @@ embeddings involved.
 Every external result stored in scratchpad with URL provenance. Max 6 external
 calls per topic. Corpus is always exhausted first.
 
-**Embeddings:** OpenAI `text-embedding-3-small` (1536 dims) via OpenRouter or direct;
-one embedding call per section at ingest, per card at save.
+**Embeddings:** OpenAI `text-embedding-3-small` (1536 dims) — **direct via the OpenAI
+API** (OpenRouter serves no embedding models); one embedding call per section at
+ingest, per card at save.
 
 **Build order note:** layer 1 ships with `semanticSearch` only (simpler single-agent
 flow); `browse` activates in layer 4 with the multi-agent split — but the schema
@@ -541,7 +564,8 @@ callbacks: {
 }
 ```
 
-- Every route (pages + API) behind middleware requiring a session; `/login` public.
+- Every route (pages + API) behind `src/proxy.ts` (Next 16 replacement for
+  `middleware.ts`) requiring a session; `/login` public.
 - Anyone else who authenticates with Google gets rejected at `signIn` → generic
   "access denied" page. No user table needed.
 - Google Cloud Console: OAuth consent screen can stay in **Testing** mode with your
@@ -663,8 +687,9 @@ additive. If life interrupts at any layer boundary, the project still stands.**
 ## 11. Conventions for Claude Code
 
 - TypeScript strict; no `any` in agent/orchestrator code.
-- All LLM calls: `generateObject` with a schema from `contracts.ts` (exception:
-  none in this project — no free-text LLM outputs).
+- All LLM calls: `generateText` + `Output.object({ schema })` with a schema from
+  `contracts.ts` (exception: none in this project — no free-text LLM outputs).
+  Read the result from `result.output`.
 - Every LLM call inside a Langfuse span with `agent`, `model`, `runId`, `topicSlug`.
 - Prompts live in `src/agents/prompts/*.ts` as exported template functions —
   never inline in logic files (evals depend on prompt versioning).
