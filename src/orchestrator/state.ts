@@ -33,9 +33,18 @@ export async function createRun(offerId: string): Promise<RunRow> {
   return data;
 }
 
+/** Thrown when a run id does not exist, so callers can answer 404 rather than 500. */
+export class RunNotFoundError extends Error {
+  constructor(readonly runId: string) {
+    super(`run ${runId} not found`);
+    this.name = 'RunNotFoundError';
+  }
+}
+
 export async function loadRun(runId: string): Promise<RunRow> {
-  const { data, error } = await db().from('runs').select().eq('id', runId).single();
+  const { data, error } = await db().from('runs').select().eq('id', runId).maybeSingle();
   if (error) throw new Error(`loadRun(${runId}) failed: ${error.message}`);
+  if (!data) throw new RunNotFoundError(runId);
   return data;
 }
 

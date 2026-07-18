@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { badRequest, hasCronSecret, json, serverError, triggerNextStep, unauthorized } from '@/lib/http';
 import { advanceRun } from '@/orchestrator/run';
+import { RunNotFoundError } from '@/orchestrator/state';
 
 /**
  * POST /api/pipeline/step — advance a run by exactly one step, then re-trigger.
@@ -40,6 +41,9 @@ export async function POST(request: Request) {
 
     return json(outcome);
   } catch (error) {
+    if (error instanceof RunNotFoundError) {
+      return Response.json({ error: error.message }, { status: 404 });
+    }
     return serverError(error instanceof Error ? error.message : 'unknown error');
   }
 }

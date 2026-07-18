@@ -1,4 +1,4 @@
-import { getDraftCards, getPlan, loadRun } from '@/orchestrator/state';
+import { getDraftCards, getPlan, loadRun, RunNotFoundError } from '@/orchestrator/state';
 import { json, serverError } from '@/lib/http';
 
 /** GET /api/runs/[id] — run status for the progress view to poll. */
@@ -26,6 +26,9 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       updatedAt: run.updated_at,
     });
   } catch (error) {
+    if (error instanceof RunNotFoundError) {
+      return Response.json({ error: error.message }, { status: 404 });
+    }
     return serverError(error instanceof Error ? error.message : 'unknown error');
   }
 }
