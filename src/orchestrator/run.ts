@@ -1,0 +1,299 @@
+import 'server-only';
+
+import type { ExtractedOffer, PlanTopic, RunStatus } from '@/agents/contracts';
+import { extractOffer, fetchOfferText } from '@/agents/extractor';
+import { planTopics, writeCardsForTopic, type TopicResult } from '@/agents/generator';
+import { db } from '@/lib/db';
+
+import {
+  appendDraftCards,
+  getCurrentStep,
+  getDraftCards,
+  getPlan,
+  loadRun,
+  saveRun,
+  type RunRow,
+} from './state';
+
+/**
+ * The pipeline state machine (CLAUDE.md §6).
+ *
+ * advanceRun executes EXACTLY ONE step per call and persists before returning, so a
+ * serverless invocation never outlives its time limit and any crash costs at most one
+ * step. The caller re-triggers until `done`.
+ *
+ * Layer 1 collapses planner/researcher/writer into one agent, so the phase sequence is
+ * pending -> extracting -> planning -> researching (once per topic) -> awaiting_approval.
+ * The `critiquing` phase arrives with the Critic in Layer 2; the status enum already
+ * carries it.
+ */
+
+export const DEFAULT_BUDGET_USD = 1.5;
+
+export function runBudgetUsd(): number {
+  const raw = process.env.RUN_BUDGET_USD;
+  const parsed = raw ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_BUDGET_USD;
+}
+
+export class BudgetExceededError extends Error {
+  constructor(spent: number, budget: number) {
+    super(`budget_exceeded: run has spent $${spent.toFixed(4)} of $${budget.toFixed(2)}`);
+    this.name = 'BudgetExceededError';
+  }
+}
+
+/**
+ * Agent entry points, injectable so the state machine can be exercised without a
+ * model provider. Production passes none of these and gets the real implementations.
+ */
+export type Deps = {
+  fetchOfferText: (url: string) => Promise<string>;
+  extractOffer: (
+    text: string,
+    meta: { runId: string },
+  ) => Promise<{ value: ExtractedOffer; costUsd: number }>;
+  planTopics: (
+    offer: ExtractedOffer,
+    meta: { runId: string },
+  ) => Promise<{ value: { topics: PlanTopic[] }; costUsd: number }>;
+  writeCardsForTopic: (topic: PlanTopic, meta: { runId: string }) => Promise<TopicResult>;
+};
+
+const defaultDeps: Deps = {
+  fetchOfferText,
+  extractOffer: (text, meta) => extractOffer(text, meta),
+  planTopics: (offer, meta) => planTopics(offer, meta),
+  writeCardsForTopic: (topic, meta) => writeCardsForTopic(topic, meta),
+};
+
+export type StepOutcome = {
+  status: RunStatus;
+  /** False once the run reaches a terminal or human-blocked state. */
+  more: boolean;
+  note?: string;
+};
+
+/**
+ * Execute one step. Never throws for expected failures — a failed run is persisted
+ * with status 'failed' and a readable error, because an exception escaping into a
+ * serverless handler loses the reason.
+ */
+export async function advanceRun(runId: string, deps: Deps = defaultDeps): Promise<StepOutcome> {
+  const run = await loadRun(runId);
+  const step = getCurrentStep(run);
+  const budget = runBudgetUsd();
+  const spent = Number(run.cost_usd ?? 0);
+
+  // Checked before spending, not after: the guard must stop the NEXT call, since the
+  // one that crossed the line has already been paid for.
+  if (spent >= budget && !isTerminal(run.status as RunStatus)) {
+    await fail(runId, new BudgetExceededError(spent, budget));
+    return { status: 'failed', more: false, note: 'budget_exceeded' };
+  }
+
+  try {
+    switch (step.phase) {
+      case 'pending':
+      case 'extracting':
+        return await stepExtract(run, deps);
+      case 'planning':
+        return await stepPlan(run, deps);
+      case 'researching':
+      case 'writing':
+        return await stepTopic(run, deps, step.topicIdx ?? 0);
+      case 'awaiting_approval':
+        return { status: 'awaiting_approval', more: false, note: 'waiting for human review' };
+      case 'done':
+      case 'failed':
+        return { status: step.phase, more: false };
+      default:
+        throw new Error(`Unhandled phase: ${step.phase}`);
+    }
+  } catch (error) {
+    await fail(runId, error);
+    return {
+      status: 'failed',
+      more: false,
+      note: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function isTerminal(status: RunStatus): boolean {
+  return status === 'done' || status === 'failed' || status === 'awaiting_approval';
+}
+
+async function fail(runId: string, error: unknown): Promise<void> {
+  const message = error instanceof Error ? error.message : String(error);
+  await saveRun(runId, {
+    status: 'failed',
+    error: message,
+    currentStep: { phase: 'failed' },
+  });
+}
+
+// ---- steps ----
+
+async function stepExtract(run: RunRow, deps: Deps): Promise<StepOutcome> {
+  await saveRun(run.id, { status: 'extracting', currentStep: { phase: 'extracting' } });
+
+  if (!run.offer_id) throw new Error('run has no offer_id');
+  const { data: offer, error } = await db()
+    .from('offers')
+    .select('raw_input, input_kind')
+    .eq('id', run.offer_id)
+    .single();
+  if (error) throw new Error(`loading offer failed: ${error.message}`);
+  if (!offer.raw_input) throw new Error('offer has no raw_input');
+  if (offer.input_kind !== 'url') {
+    throw new Error(`input_kind "${offer.input_kind}" is not supported until Layer 2`);
+  }
+
+  const text = await deps.fetchOfferText(offer.raw_input);
+  const extracted = await deps.extractOffer(text, { runId: run.id });
+
+  await db()
+    .from('offers')
+    .update({
+      extracted: extracted.value,
+      company: extracted.value.company,
+      role: extracted.value.role,
+      seniority: extracted.value.seniority,
+    })
+    .eq('id', run.offer_id);
+
+  await saveRun(run.id, {
+    status: 'planning',
+    currentStep: { phase: 'planning' },
+    addCostUsd: extracted.costUsd,
+  });
+
+  return { status: 'planning', more: true, note: `extracted ${extracted.value.mustHave.length} requirements` };
+}
+
+async function stepPlan(run: RunRow, deps: Deps): Promise<StepOutcome> {
+  if (!run.offer_id) throw new Error('run has no offer_id');
+  const { data: offer, error } = await db()
+    .from('offers')
+    .select('extracted')
+    .eq('id', run.offer_id)
+    .single();
+  if (error) throw new Error(`loading offer failed: ${error.message}`);
+  if (!offer.extracted) throw new Error('offer has not been extracted yet');
+
+  const plan = await deps.planTopics(offer.extracted as ExtractedOffer, { runId: run.id });
+
+  if (plan.value.topics.length === 0) {
+    // Not an error: an offer with no technical requirements legitimately yields no
+    // topics. Park it for review rather than failing.
+    await saveRun(run.id, {
+      status: 'awaiting_approval',
+      currentStep: { phase: 'awaiting_approval' },
+      plan: plan.value,
+      addCostUsd: plan.costUsd,
+    });
+    return { status: 'awaiting_approval', more: false, note: 'plan contained no topics' };
+  }
+
+  await saveRun(run.id, {
+    status: 'researching',
+    currentStep: { phase: 'researching', topicIdx: 0 },
+    plan: plan.value,
+    addCostUsd: plan.costUsd,
+  });
+
+  return { status: 'researching', more: true, note: `planned ${plan.value.topics.length} topics` };
+}
+
+async function stepTopic(run: RunRow, deps: Deps, topicIdx: number): Promise<StepOutcome> {
+  const plan = getPlan(run);
+  if (!plan) throw new Error('run reached researching without a plan');
+
+  const topic = plan.topics[topicIdx];
+  if (!topic) {
+    // All topics consumed.
+    const total = getDraftCards(run).length;
+    await saveRun(run.id, {
+      status: 'awaiting_approval',
+      currentStep: { phase: 'awaiting_approval' },
+    });
+    return { status: 'awaiting_approval', more: false, note: `${total} draft cards ready for review` };
+  }
+
+  const result = await deps.writeCardsForTopic(topic, { runId: run.id });
+  await appendDraftCards(run.id, result.cards);
+
+  const isLast = topicIdx + 1 >= plan.topics.length;
+  await saveRun(run.id, {
+    status: isLast ? 'awaiting_approval' : 'researching',
+    currentStep: isLast
+      ? { phase: 'awaiting_approval' }
+      : { phase: 'researching', topicIdx: topicIdx + 1 },
+    addCostUsd: result.costUsd,
+  });
+
+  const note =
+    result.sectionsFound === 0
+      ? `${topic.slug}: no corpus material, 0 cards`
+      : `${topic.slug}: ${result.cards.length} cards from ${result.sectionsFound} sections` +
+        (result.dropped.length > 0 ? ` (${result.dropped.length} dropped: unusable provenance)` : '');
+
+  return { status: isLast ? 'awaiting_approval' : 'researching', more: !isLast, note };
+}
+
+/**
+ * Restart a failed run from its last checkpoint — never from zero.
+ *
+ * The phase recorded in current_step is the one that failed, so clearing the error and
+ * re-entering it re-runs only that step. Work already checkpointed (extraction, plan,
+ * cards from earlier topics) is preserved.
+ */
+export async function resumeRun(runId: string, deps: Deps = defaultDeps): Promise<StepOutcome> {
+  const run = await loadRun(runId);
+
+  if (run.status !== 'failed') {
+    return { status: run.status as RunStatus, more: !isTerminal(run.status as RunStatus) };
+  }
+
+  const plan = getPlan(run);
+  const cards = getDraftCards(run);
+
+  // current_step was overwritten with {phase:'failed'}, so the resume point is derived
+  // from what has been persisted: cards/plan exist -> resume mid-research.
+  let phase: RunStatus = 'pending';
+  let topicIdx = 0;
+  if (plan && plan.topics.length > 0) {
+    phase = 'researching';
+    // Resume at the first topic with no cards yet. Topics that produced zero cards
+    // legitimately (no corpus material) would otherwise be retried forever, so this
+    // relies on the recorded index when available.
+    const covered = new Set(cards.map((c) => c.topicSlug));
+    const next = plan.topics.findIndex((t) => !covered.has(t.slug));
+    topicIdx = next === -1 ? plan.topics.length : next;
+  } else if (run.offer_id) {
+    phase = 'planning';
+  }
+
+  await saveRun(runId, {
+    status: phase,
+    currentStep: phase === 'researching' ? { phase, topicIdx } : { phase },
+    error: null,
+  });
+
+  return advanceRun(runId, deps);
+}
+
+/** Drive a run to completion in one process — used by CLI and tests, not by Vercel. */
+export async function runToCompletion(
+  runId: string,
+  deps: Deps = defaultDeps,
+  maxSteps = 50,
+): Promise<StepOutcome> {
+  let outcome: StepOutcome = { status: 'pending', more: true };
+  for (let i = 0; i < maxSteps && outcome.more; i++) {
+    outcome = await advanceRun(runId, deps);
+    if (outcome.note) console.log(`  [${outcome.status}] ${outcome.note}`);
+  }
+  return outcome;
+}

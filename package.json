@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "verify:fsrs": "tsx scripts/verify-fsrs.ts",
     "verify:markdown": "tsx scripts/verify-markdown.ts",
+    "verify:orchestrator": "tsx --conditions=react-server --env-file=.env.local scripts/verify-orchestrator.ts",
     "ingest": "tsx --conditions=react-server --env-file=.env.local scripts/ingest.ts",
     "db:types": "supabase gen types typescript --project-id dakccrefybxorlmxxgxm > src/lib/database.types.ts"
   },
