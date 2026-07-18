@@ -26,7 +26,12 @@ export const MODELS: Record<AgentRole, string> = {
   judge: 'anthropic/claude-haiku-4.5',
 };
 
-export const EMBEDDING_MODEL = 'text-embedding-3-small';
+/**
+ * Embeddings run through OpenRouter like everything else. Note the provider prefix:
+ * OpenRouter ids are "openai/text-embedding-3-small", not the bare OpenAI name.
+ * Native width is 1536, matching vector(1536) in the schema.
+ */
+export const EMBEDDING_MODEL = 'openai/text-embedding-3-small';
 export const EMBEDDING_DIMENSIONS = 1536;
 
 /** USD per token. Verified against the OpenRouter models API. */

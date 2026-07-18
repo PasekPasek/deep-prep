@@ -82,7 +82,7 @@ resume after a crash or redeploy.
 | Framework | Next.js 16 (App Router, TypeScript, strict) | deployed on Vercel; Node ≥ 20.9 |
 | AI layer | Vercel AI SDK 7 + `@openrouter/ai-sdk-provider` | `generateText` + `Output.object({ schema })` + Zod everywhere |
 | Models | OpenRouter | per-agent model map in `src/lib/models.ts` |
-| Embeddings | OpenAI `text-embedding-3-small` (1536), **direct OpenAI API** | OpenRouter serves no embedding models |
+| Embeddings | `openai/text-embedding-3-small` (1536) **via OpenRouter** | same $0.02/M as direct; one API key for the whole project |
 | DB | Supabase (Postgres + pgvector, HNSW indexes) | also stores agent state (runs, scratchpad) |
 | Spaced repetition | `ts-fsrs` | do NOT implement FSRS manually |
 | Observability | Langfuse (cloud free tier) | tracing from day 1, every LLM call |
@@ -101,8 +101,13 @@ verified against live documentation before being written down:
 2. **AI SDK 7 with `generateText` + `Output.object`.** `generateObject` is deprecated
    (removed in a future major) and `experimental_output` no longer exists. Structured
    results arrive as `result.output`, not `result.object`.
-3. **Embeddings go direct to OpenAI.** OpenRouter's model list contains no embedding
-   models, so `OPENAI_API_KEY` is required, not optional.
+3. **Embeddings go through OpenRouter**, model id `openai/text-embedding-3-small`
+   (note the provider prefix). OpenRouter serves embeddings at `/api/v1/embeddings`,
+   and they are deliberately absent from `/api/v1/models`, which lists generation
+   models only — so the model catalogue says nothing about embedding support. Price
+   matches OpenAI direct ($0.02/M tokens), so there is no reason to add a second key.
+   Neither the API nor the provider exposes a `dimensions` parameter, so the model's
+   native 1536 width is used and asserted on every call in `src/lib/embeddings.ts`.
 4. **pgvector indexes use HNSW**, not `ivfflat` — current Supabase guidance for
    read-heavy semantic search. Similarity search runs through SQL functions
    (`match_sections`, `match_cards`) called via `.rpc()`.
@@ -540,9 +545,9 @@ embeddings involved.
 Every external result stored in scratchpad with URL provenance. Max 6 external
 calls per topic. Corpus is always exhausted first.
 
-**Embeddings:** OpenAI `text-embedding-3-small` (1536 dims) — **direct via the OpenAI
-API** (OpenRouter serves no embedding models); one embedding call per section at
-ingest, per card at save.
+**Embeddings:** `openai/text-embedding-3-small` (1536 dims) **via OpenRouter** — same
+price as calling OpenAI directly, one key for the project; one embedding call per
+section at ingest, per card at save.
 
 **Build order note:** layer 1 ships with `semanticSearch` only (simpler single-agent
 flow); `browse` activates in layer 4 with the multi-agent split — but the schema
@@ -582,7 +587,7 @@ callbacks: {
 - Env vars (Production + Preview):
   ```
   OPENROUTER_API_KEY=
-  OPENAI_API_KEY=            # embeddings only (or route via OpenRouter)
+  # (no OpenAI key needed — embeddings route through OPENROUTER_API_KEY)
   SUPABASE_URL=
   SUPABASE_SERVICE_ROLE_KEY= # server-only, never NEXT_PUBLIC
   AUTH_SECRET=               # npx auth secret

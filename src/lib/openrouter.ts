@@ -2,7 +2,7 @@ import 'server-only';
 
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 
-import { MODELS, type AgentRole } from './models';
+import { EMBEDDING_MODEL, MODELS, type AgentRole } from './models';
 
 let provider: ReturnType<typeof createOpenRouter> | undefined;
 
@@ -24,4 +24,9 @@ function openrouter() {
 /** Resolve an agent role to a model instance. Agents never name a model directly. */
 export function modelFor(role: AgentRole) {
   return openrouter()(MODELS[role]);
+}
+
+/** Embedding model, same provider and key as generation. */
+export function embeddingModel() {
+  return openrouter().textEmbeddingModel(EMBEDDING_MODEL);
 }

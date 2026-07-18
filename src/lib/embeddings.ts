@@ -1,48 +1,55 @@
 import 'server-only';
 
-import OpenAI from 'openai';
+import { embedMany as aiEmbedMany } from 'ai';
 
 import { EMBEDDING_DIMENSIONS, EMBEDDING_MODEL } from './models';
+import { embeddingModel } from './openrouter';
 
 /**
- * Embeddings go straight to OpenAI: OpenRouter's catalogue contains no embedding
- * models, so routing them through it is not an option.
+ * Embeddings, routed through OpenRouter like every other model call.
+ *
+ * OpenRouter's embeddings live at /api/v1/embeddings and are absent from
+ * /api/v1/models (which lists generation models only) — so the model catalogue is not
+ * evidence of what the embeddings endpoint supports. Price matches OpenAI direct
+ * ($0.02/M tokens), so routing through OpenRouter costs nothing extra and keeps the
+ * project on a single API key with unified spend tracking.
  *
  * One embedding per corpus section at ingest, one per card at save. The same vector
  * space serves retrieval (match_sections) and dedup (match_cards), so every caller
- * must use this module rather than embedding ad hoc with different settings.
+ * must come through here rather than embedding ad hoc with different settings.
  */
 
-let client: OpenAI | undefined;
-
-function openai(): OpenAI {
-  if (!client) {
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-      throw new Error(
-        'Missing OPENAI_API_KEY. Embeddings require a direct OpenAI key — OpenRouter serves no embedding models.',
-      );
-    }
-    client = new OpenAI({ apiKey });
+/**
+ * Neither OpenRouter's embeddings API nor the provider's settings expose a
+ * `dimensions` parameter, so we take the model's native width. For
+ * text-embedding-3-small that is 1536, matching vector(1536) in the schema.
+ *
+ * That is an assumption about a remote service, so it is checked on every call: a
+ * mismatch fails loudly at ingest instead of silently writing wrong-width vectors
+ * that would surface much later as nonsense similarity scores.
+ */
+function assertDimensions(embeddings: number[][]): void {
+  const wrong = embeddings.find((e) => e.length !== EMBEDDING_DIMENSIONS);
+  if (wrong) {
+    throw new Error(
+      `Embedding model "${EMBEDDING_MODEL}" returned ${wrong.length} dimensions, ` +
+        `but the schema declares vector(${EMBEDDING_DIMENSIONS}). ` +
+        'Change EMBEDDING_DIMENSIONS and migrate the vector columns, or pick a model of matching width.',
+    );
   }
-  return client;
 }
 
 /** Embed a batch of texts. Order of the returned vectors matches the input. */
 export async function embedMany(texts: string[]): Promise<number[][]> {
   if (texts.length === 0) return [];
 
-  const response = await openai().embeddings.create({
-    model: EMBEDDING_MODEL,
-    input: texts,
-    dimensions: EMBEDDING_DIMENSIONS,
+  const { embeddings } = await aiEmbedMany({
+    model: embeddingModel(),
+    values: texts,
   });
 
-  // The API documents index ordering, but sorting makes the guarantee local.
-  return response.data
-    .slice()
-    .sort((a, b) => a.index - b.index)
-    .map((d) => d.embedding);
+  assertDimensions(embeddings);
+  return embeddings;
 }
 
 export async function embed(text: string): Promise<number[]> {
