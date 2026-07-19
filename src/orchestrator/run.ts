@@ -46,6 +46,15 @@ export class BudgetExceededError extends Error {
 }
 
 /**
+ * Hard ceiling on invocations per run — the circuit breaker for the self-trigger
+ * chain. The budget guard stops LLM spend, but a state-machine bug that loops
+ * WITHOUT spending would spin serverless invocations forever. Sized for the worst
+ * legitimate run (every phase + a topic per step + repairs) with a wide margin:
+ * a healthy run uses well under half of this.
+ */
+export const MAX_STEPS_PER_RUN = 60;
+
+/**
  * Agent entry points, injectable so the state machine can be exercised without a
  * model provider. Production passes none of these and gets the real implementations.
  */
@@ -94,6 +103,19 @@ export async function advanceRun(runId: string, deps: Deps = defaultDeps): Promi
   if (spent >= budget && !isTerminal(run.status as RunStatus)) {
     await fail(runId, new BudgetExceededError(spent, budget));
     return { status: 'failed', more: false, note: 'budget_exceeded' };
+  }
+
+  // Circuit breaker: bound the self-trigger chain regardless of what the state
+  // machine does. Counted here, in the one place every step passes through.
+  if (!isTerminal(run.status as RunStatus)) {
+    if ((run.steps ?? 0) >= MAX_STEPS_PER_RUN) {
+      await fail(runId, new Error(`step_limit_exceeded: ${run.steps} invocations (max ${MAX_STEPS_PER_RUN})`), step);
+      return { status: 'failed', more: false, note: 'step_limit_exceeded' };
+    }
+    await db()
+      .from('runs')
+      .update({ steps: (run.steps ?? 0) + 1 })
+      .eq('id', runId);
   }
 
   try {

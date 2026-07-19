@@ -327,6 +327,25 @@ trade for not shipping invented cards.
 error back, then failure with a clear message. Tokens from the failed attempt still
 count toward the budget — hiding them would let a run exceed its ceiling unnoticed.
 
+**SSRF guard on offer URLs.** The pipeline fetches whatever URL the user submits, so
+`safeFetchText` validates every hop: scheme allowlist, DNS resolution checked against
+private/reserved ranges (loopback, RFC1918, link-local incl. cloud metadata
+endpoints, CGNAT, IPv6 equivalents), redirects re-validated per hop, and a 2 MiB
+response cap streamed rather than trusted from Content-Length.
+
+**Prompt-injection posture.** Offer text is untrusted web content. It travels inside
+explicit OFFER markers with a system-prompt contract that it is data, never
+instructions; input is capped at 40k chars; and the blast radius is bounded by
+construction — extraction output is a Zod schema, cards only cite retrieved section
+ids, and nothing a model says can touch the DB outside those shapes.
+
+**Step circuit breaker.** Each run counts its serverless invocations and hard-fails
+at 60 (`step_limit_exceeded`). The budget guard stops LLM spend, but only this stops
+a state-machine bug that loops *without* spending.
+
+All three are exercised by `pnpm verify:guardrails` — including the metadata-endpoint
+block and a breaker trip with agents stubbed to prove they are never reached.
+
 ---
 
 ## Evals (Layer 5)

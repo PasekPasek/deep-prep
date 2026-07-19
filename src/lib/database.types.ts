@@ -249,6 +249,7 @@ export type Database = {
           offer_id: string | null
           plan: Json | null
           status: string
+          steps: number
           updated_at: string | null
         }
         Insert: {
@@ -261,6 +262,7 @@ export type Database = {
           offer_id?: string | null
           plan?: Json | null
           status?: string
+          steps?: number
           updated_at?: string | null
         }
         Update: {
@@ -273,6 +275,7 @@ export type Database = {
           offer_id?: string | null
           plan?: Json | null
           status?: string
+          steps?: number
           updated_at?: string | null
         }
         Relationships: [

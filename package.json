@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "verify:fsrs": "tsx scripts/verify-fsrs.ts",
     "verify:markdown": "tsx scripts/verify-markdown.ts",
+    "verify:guardrails": "tsx --conditions=react-server --env-file=.env.local scripts/verify-guardrails.ts",
     "verify:retrieval": "tsx --conditions=react-server --env-file=.env.local scripts/verify-retrieval.ts",
     "verify:reviews": "tsx --conditions=react-server --env-file=.env.local scripts/verify-reviews.ts",
     "verify:orchestrator": "tsx --conditions=react-server --env-file=.env.local scripts/verify-orchestrator.ts",

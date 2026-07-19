@@ -1,5 +1,7 @@
 import 'server-only';
 
+import { safeFetchText } from '@/lib/safeFetch';
+
 import { callAgent, type CallMeta, type CallResult } from './call';
 import { ExtractedOffer } from './contracts';
 import { EXTRACTOR_SYSTEM, extractorPrompt } from './prompts/extractor';
@@ -29,37 +31,31 @@ export async function extractOffer(
 }
 
 /**
+ * Cap on the text handed to the model. A real job ad fits comfortably; anything
+ * longer is page chrome the parser failed to strip — or padding aimed at the
+ * context window. Truncation keeps the head, where offers put the requirements.
+ */
+export const MAX_OFFER_CHARS = 40_000;
+
+/**
  * Fetch a job offer URL and reduce it to readable text.
  *
  * Deliberately dependency-free: job boards render heavily but the offer body is plain
- * prose, and a full headless browser is disproportionate for Layer 1. Scripts and
- * styles are stripped before tags so their contents never reach the model.
+ * prose, and a full headless browser is disproportionate here. Scripts and styles are
+ * stripped before tags so their contents never reach the model. The fetch itself goes
+ * through the SSRF guard — the URL is user input pointed at our own server.
  */
 export async function fetchOfferText(url: string): Promise<string> {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    throw new Error(`Not a valid URL: ${url}`);
-  }
-  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-    throw new Error(`Unsupported protocol: ${parsed.protocol}`);
-  }
-
-  const response = await fetch(url, {
+  const html = await safeFetchText(url, {
     headers: {
       // Some boards return a stub page to unrecognised clients.
       'User-Agent': 'Mozilla/5.0 (compatible; DeepPrep/1.0; +https://github.com/PasekPasek/deep-prep)',
       Accept: 'text/html,application/xhtml+xml',
     },
-    redirect: 'follow',
   });
 
-  if (!response.ok) {
-    throw new Error(`Fetching ${url} failed: HTTP ${response.status}`);
-  }
-
-  return htmlToText(await response.text());
+  const text = htmlToText(html);
+  return text.length > MAX_OFFER_CHARS ? `${text.slice(0, MAX_OFFER_CHARS)}\n[truncated]` : text;
 }
 
 export function htmlToText(html: string): string {
