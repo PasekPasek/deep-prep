@@ -1,9 +1,7 @@
-import Link from 'next/link';
-
+import { SelectFilter } from '@/components/select-filter';
 import { db } from '@/lib/db';
 import type { ReviewStateRow } from '@/lib/fsrs';
 import { intervalPreview } from '@/lib/intervals';
-import { cn } from '@/lib/utils';
 
 import { ReviewsClient, type DueCard } from './reviews-client';
 
@@ -97,49 +95,28 @@ export default async function ReviewsPage({ searchParams }: { searchParams: Sear
   return (
     <div className="space-y-5">
       {showFilters && (
-        <div className="flex flex-wrap items-center gap-1.5 text-sm">
-          <FilterChip href="/" active={!topicFilter && !offerFilter}>
-            All · {rows.length}
-          </FilterChip>
-          {[...topicCounts.entries()].map(([slug, t]) => (
-            <FilterChip key={slug} href={`/?topic=${slug}`} active={topicFilter === slug}>
-              {t.name} · {t.count}
-            </FilterChip>
-          ))}
-          {(offers ?? []).map((offer) => (
-            <FilterChip key={offer.id} href={`/?offer=${offer.id}`} active={offerFilter === offer.id}>
-              {offer.role ?? 'Offer'}
-              {offer.company ? ` @ ${offer.company}` : ''}
-            </FilterChip>
-          ))}
+        <div className="flex flex-wrap items-center gap-2">
+          <SelectFilter
+            param="topic"
+            allLabel={`All topics · ${rows.length}`}
+            options={[...topicCounts.entries()].map(([slug, t]) => ({
+              value: slug,
+              label: t.name,
+              count: t.count,
+            }))}
+          />
+          <SelectFilter
+            param="offer"
+            allLabel="All offers"
+            options={(offers ?? []).map((offer) => ({
+              value: offer.id,
+              label: `${offer.role ?? 'Offer'}${offer.company ? ` @ ${offer.company}` : ''}`,
+            }))}
+          />
         </div>
       )}
 
       <ReviewsClient key={`${topicFilter ?? ''}:${offerFilter ?? ''}`} initial={due} />
     </div>
-  );
-}
-
-function FilterChip({
-  href,
-  active,
-  children,
-}: {
-  href: string;
-  active: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <Link
-      href={href}
-      className={cn(
-        'rounded-full border px-3 py-1 transition-colors',
-        active
-          ? 'border-foreground bg-foreground text-background'
-          : 'text-muted-foreground hover:text-foreground',
-      )}
-    >
-      {children}
-    </Link>
   );
 }

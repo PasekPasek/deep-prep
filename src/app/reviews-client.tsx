@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Flashcard, Kbd, type FlashcardData } from '@/components/flashcard';
 import { Button } from '@/components/ui/button';
 import type { IntervalPreview } from '@/lib/intervals';
+import { cn } from '@/lib/utils';
 
 export type DueCard = FlashcardData & {
   cardId: string;
@@ -21,25 +22,36 @@ const RATINGS = [
 ] as const;
 
 /**
- * The daily loop, driven without the mouse:
- *   Space  reveal            1–4  rate
- *   →      skip (to the end of the queue — FSRS state untouched)
- *   ←      take back the last skip
+ * The daily loop.
  *
- * Skipping is queue reordering only. A skipped card stays due; it just stops
- * blocking the session.
+ *   ←/→    move between due cards (browsing — FSRS untouched)
+ *   Space  reveal   ·   1–4  rate (removes the card from the session)
+ *   L      toggle the list view of everything still due
+ *
+ * Rating is the only action that touches the schedule. Navigation is free movement
+ * through the session, and the list view is the map of it: click any question to
+ * jump straight to that card.
  */
 export function ReviewsClient({ initial }: { initial: DueCard[] }) {
   const router = useRouter();
   const [queue, setQueue] = useState(initial);
-  const [skipped, setSkipped] = useState<DueCard[]>([]);
+  const [cursor, setCursor] = useState(0);
+  const [listView, setListView] = useState(false);
   const [revealed, setRevealed] = useState(false);
   const [pending, setPending] = useState(false);
   const [done, setDone] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
-  const current = queue[0];
-  const remaining = queue.length + skipped.length;
+  const current = queue[cursor];
+
+  const goto = useCallback(
+    (index: number) => {
+      setCursor(Math.max(0, Math.min(queue.length - 1, index)));
+      setRevealed(false);
+      setListView(false);
+    },
+    [queue.length],
+  );
 
   const rate = useCallback(
     async (rating: number) => {
@@ -57,19 +69,13 @@ export function ReviewsClient({ initial }: { initial: DueCard[] }) {
           throw new Error(body.error ?? `HTTP ${response.status}`);
         }
         setQueue((q) => {
-          const next = q.slice(1);
-          // The last card was rated: skipped cards return for a second pass.
-          if (next.length === 0) {
-            setSkipped((s) => {
-              if (s.length > 0) setTimeout(() => setQueue(s), 0);
-              return [];
-            });
-          }
+          const next = q.filter((_, i) => i !== cursor);
+          setCursor((c) => Math.min(c, Math.max(0, next.length - 1)));
           return next;
         });
         setRevealed(false);
         setDone((d) => d + 1);
-        // Refreshes the server-rendered due badge in the nav.
+        // Keeps the server-rendered due badge in the nav honest.
         router.refresh();
       } catch (e) {
         setError(e instanceof Error ? e.message : 'rating failed');
@@ -77,47 +83,27 @@ export function ReviewsClient({ initial }: { initial: DueCard[] }) {
         setPending(false);
       }
     },
-    [current, pending, router],
+    [current, cursor, pending, router],
   );
-
-  const skip = useCallback(() => {
-    if (!current) return;
-    setSkipped((s) => [...s, current]);
-    setQueue((q) => q.slice(1));
-    setRevealed(false);
-  }, [current]);
-
-  const unskip = useCallback(() => {
-    setSkipped((s) => {
-      if (s.length === 0) return s;
-      const last = s[s.length - 1];
-      setQueue((q) => [last, ...q]);
-      setRevealed(false);
-      return s.slice(0, -1);
-    });
-  }, []);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.target instanceof HTMLElement && /input|textarea/i.test(event.target.tagName)) return;
+      if (event.target instanceof HTMLElement && /input|textarea|select/i.test(event.target.tagName)) return;
+      if (queue.length === 0) return;
 
       if (event.key === 'ArrowRight') {
         event.preventDefault();
-        skip();
-        return;
-      }
-      if (event.key === 'ArrowLeft') {
+        goto(cursor + 1);
+      } else if (event.key === 'ArrowLeft') {
         event.preventDefault();
-        unskip();
-        return;
-      }
-      if (!current) return;
-      if (!revealed && (event.code === 'Space' || event.key === 'Enter')) {
+        goto(cursor - 1);
+      } else if (event.key === 'l' || event.key === 'L') {
+        event.preventDefault();
+        setListView((v) => !v);
+      } else if (!listView && !revealed && (event.code === 'Space' || event.key === 'Enter')) {
         event.preventDefault();
         setRevealed(true);
-        return;
-      }
-      if (revealed) {
+      } else if (!listView && revealed) {
         const rating = RATINGS.find((r) => r.key === event.key);
         if (rating) {
           event.preventDefault();
@@ -127,60 +113,73 @@ export function ReviewsClient({ initial }: { initial: DueCard[] }) {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [current, revealed, rate, skip, unskip]);
+  }, [queue.length, cursor, revealed, listView, rate, goto]);
 
-  if (!current && skipped.length > 0) {
-    // Everything left was skipped — offer the second pass explicitly.
-    return (
-      <div className="flex flex-col items-center gap-4 py-24 text-center">
-        <p className="font-serif text-2xl">
-          {skipped.length} skipped card{skipped.length === 1 ? '' : 's'} left
-        </p>
-        <Button size="lg" onClick={() => { setQueue(skipped); setSkipped([]); }}>
-          Review them now
-        </Button>
-      </div>
-    );
-  }
-
-  if (!current) {
+  if (queue.length === 0) {
     return (
       <div className="flex flex-col items-center gap-3 py-24 text-center">
         <p className="font-serif text-2xl">{done > 0 ? 'All done.' : 'Nothing due here.'}</p>
         <p className="text-sm text-muted-foreground">
           {done > 0
             ? `${done} card${done === 1 ? '' : 's'} reviewed — come back when the next ones fall due.`
-            : 'Nothing in this scope is due. Clear the filter or approve more cards.'}
+            : 'Nothing in this scope is due. Clear the filters or approve more cards.'}
         </p>
+      </div>
+    );
+  }
+
+  const header = (
+    <div className="flex items-baseline justify-between text-sm text-muted-foreground">
+      <span>
+        {cursor + 1} of {queue.length}
+        {done > 0 && ` · ${done} rated`}
+      </span>
+      <div className="flex items-center gap-3">
+        <span className="hidden items-center gap-3 sm:flex">
+          <Kbd>←</Kbd>
+          <Kbd>→</Kbd>
+          {!listView && (revealed ? <><Kbd>1</Kbd>–<Kbd>4</Kbd> rate</> : <><Kbd>Space</Kbd> answer</>)}
+        </span>
+        <Button variant="ghost" size="sm" onClick={() => setListView((v) => !v)}>
+          {listView ? 'Card view' : '≡ List'}
+        </Button>
+      </div>
+    </div>
+  );
+
+  if (listView) {
+    return (
+      <div className="space-y-4">
+        {header}
+        <ol className="divide-y rounded-lg border">
+          {queue.map((card, i) => (
+            <li key={card.cardId}>
+              <button
+                type="button"
+                onClick={() => goto(i)}
+                className={cn(
+                  'flex w-full items-baseline gap-3 px-4 py-2.5 text-left text-sm hover:bg-muted/50',
+                  i === cursor && 'bg-muted/60',
+                )}
+              >
+                <span className="w-6 shrink-0 text-right font-mono text-xs text-muted-foreground">
+                  {i + 1}
+                </span>
+                <span className="truncate font-serif">{card.front}</span>
+                {card.topic && (
+                  <span className="ml-auto shrink-0 text-xs text-muted-foreground">{card.topic}</span>
+                )}
+              </button>
+            </li>
+          ))}
+        </ol>
       </div>
     );
   }
 
   return (
     <div className="space-y-5">
-      <div className="flex items-baseline justify-between text-sm text-muted-foreground">
-        <span>
-          {done + 1} of {done + remaining}
-          {skipped.length > 0 && ` · ${skipped.length} skipped`}
-        </span>
-        <span className="hidden items-center gap-3 sm:flex">
-          {revealed ? (
-            <>
-              <Kbd>1</Kbd>–<Kbd>4</Kbd> rate
-            </>
-          ) : (
-            <>
-              <Kbd>Space</Kbd> answer
-            </>
-          )}
-          <Kbd>→</Kbd> skip
-          {skipped.length > 0 && (
-            <>
-              <Kbd>←</Kbd> back
-            </>
-          )}
-        </span>
-      </div>
+      {header}
 
       <Flashcard card={current} revealed={revealed} size="lg" />
 
@@ -201,15 +200,24 @@ export function ReviewsClient({ initial }: { initial: DueCard[] }) {
           ))}
         </div>
       ) : (
-        <div className="flex gap-2">
-          <Button size="lg" className="flex-1 py-6" onClick={() => setRevealed(true)}>
-            Show answer
-          </Button>
-          <Button size="lg" variant="outline" className="py-6" onClick={skip}>
-            Skip →
-          </Button>
-        </div>
+        <Button size="lg" className="w-full py-6" onClick={() => setRevealed(true)}>
+          Show answer
+        </Button>
       )}
+
+      <div className="flex justify-between">
+        <Button variant="outline" size="sm" disabled={cursor === 0} onClick={() => goto(cursor - 1)}>
+          ← Previous
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={cursor >= queue.length - 1}
+          onClick={() => goto(cursor + 1)}
+        >
+          Next →
+        </Button>
+      </div>
 
       {error && <p className="text-sm text-destructive">{error}</p>}
     </div>
