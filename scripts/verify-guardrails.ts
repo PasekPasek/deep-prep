@@ -65,6 +65,9 @@ async function main() {
     const outcome = await advanceRun(run.id, {
       // Deps that would loop forever if the breaker did not trip first.
       fetchOfferText: async () => 'text',
+      extractOfferFromImage: async () => {
+        throw new Error('unreachable');
+      },
       extractOffer: async () => {
         throw new Error('should never be reached — breaker must trip first');
       },

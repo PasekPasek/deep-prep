@@ -2,7 +2,7 @@ import 'server-only';
 
 import type { DraftCard, ExtractedOffer, PlanTopic, RunStatus } from '@/agents/contracts';
 import { dedupDrafts, type DedupResult } from '@/agents/critic';
-import { extractOffer, fetchOfferText } from '@/agents/extractor';
+import { extractOffer, extractOfferFromImage, fetchOfferText } from '@/agents/extractor';
 import { planTopics, writeCardsForTopic, type TopicResult } from '@/agents/generator';
 import { db } from '@/lib/db';
 
@@ -64,6 +64,10 @@ export type Deps = {
     text: string,
     meta: { runId: string },
   ) => Promise<{ value: ExtractedOffer; costUsd: number }>;
+  extractOfferFromImage: (
+    imageUrl: string,
+    meta: { runId: string },
+  ) => Promise<{ value: ExtractedOffer; costUsd: number }>;
   planTopics: (
     offer: ExtractedOffer,
     meta: { runId: string },
@@ -75,6 +79,7 @@ export type Deps = {
 export const defaultDeps: Deps = {
   fetchOfferText,
   extractOffer: (text, meta) => extractOffer(text, meta),
+  extractOfferFromImage: (imageUrl, meta) => extractOfferFromImage(imageUrl, meta),
   planTopics: (offer, meta) => planTopics(offer, meta),
   writeCardsForTopic: (topic, meta) => writeCardsForTopic(topic, meta),
   dedupDrafts: (drafts, offerId) => dedupDrafts(drafts, offerId),
@@ -176,12 +181,24 @@ async function stepExtract(run: RunRow, deps: Deps): Promise<StepOutcome> {
     .single();
   if (error) throw new Error(`loading offer failed: ${error.message}`);
   if (!offer.raw_input) throw new Error('offer has no raw_input');
-  if (offer.input_kind !== 'url') {
-    throw new Error(`input_kind "${offer.input_kind}" is not supported until Layer 2`);
-  }
 
-  const text = await deps.fetchOfferText(offer.raw_input);
-  const extracted = await deps.extractOffer(text, { runId: run.id });
+  let extracted: { value: ExtractedOffer; costUsd: number };
+  if (offer.input_kind === 'screenshot') {
+    // raw_input is a Storage path in the private bucket. The signed URL is minted
+    // fresh per attempt and short-lived — it only needs to survive one model call.
+    const { data: signed, error: signError } = await db()
+      .storage.from('screenshots')
+      .createSignedUrl(offer.raw_input, 600);
+    if (signError || !signed) {
+      throw new Error(`could not sign screenshot URL: ${signError?.message ?? 'no data'}`);
+    }
+    extracted = await deps.extractOfferFromImage(signed.signedUrl, { runId: run.id });
+  } else if (offer.input_kind === 'url') {
+    const text = await deps.fetchOfferText(offer.raw_input);
+    extracted = await deps.extractOffer(text, { runId: run.id });
+  } else {
+    throw new Error(`unknown input_kind "${offer.input_kind}"`);
+  }
 
   await db()
     .from('offers')

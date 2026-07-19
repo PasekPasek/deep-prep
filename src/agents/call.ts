@@ -44,12 +44,15 @@ export async function callAgent<S extends z.ZodType>({
   schema,
   system,
   prompt,
+  imageUrl,
   meta = {},
 }: {
   role: AgentRole;
   schema: S;
   system: string;
   prompt: string;
+  /** Attach an image (e.g. an offer screenshot) — requires a vision-capable model. */
+  imageUrl?: string;
   meta?: CallMeta;
 }): Promise<CallResult<z.infer<S>>> {
   const model = MODELS[role];
@@ -78,7 +81,19 @@ export async function callAgent<S extends z.ZodType>({
         generateText({
           model: modelFor(role),
           system,
-          prompt: userPrompt,
+          ...(imageUrl
+            ? {
+                messages: [
+                  {
+                    role: 'user' as const,
+                    content: [
+                      { type: 'text' as const, text: userPrompt },
+                      { type: 'image' as const, image: new URL(imageUrl) },
+                    ],
+                  },
+                ],
+              }
+            : { prompt: userPrompt }),
           output: Output.object({ schema }),
           telemetry: { functionId: `agent:${role}` },
         }),

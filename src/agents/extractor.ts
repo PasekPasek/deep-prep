@@ -31,6 +31,27 @@ export async function extractOffer(
 }
 
 /**
+ * Screenshot path: the offer arrives as an image (signed Storage URL) and the
+ * vision-capable extractor reads it directly. Same system prompt, same contract —
+ * the untrusted-data rules apply to text inside the image exactly as to scraped HTML.
+ */
+export async function extractOfferFromImage(
+  imageUrl: string,
+  meta: CallMeta = {},
+): Promise<CallResult<ExtractedOffer>> {
+  return callAgent({
+    role: 'extractor',
+    schema: ExtractedOffer,
+    system: EXTRACTOR_SYSTEM,
+    prompt:
+      'Extract the requirements from the job offer in the attached screenshot. ' +
+      'Read all visible text, including small print.',
+    imageUrl,
+    meta,
+  });
+}
+
+/**
  * Cap on the text handed to the model. A real job ad fits comfortably; anything
  * longer is page chrome the parser failed to strip — or padding aimed at the
  * context window. Truncation keeps the head, where offers put the requirements.

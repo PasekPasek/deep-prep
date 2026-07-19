@@ -59,6 +59,7 @@ function stubDeps(options: { failOnTopic?: string; duplicateFronts?: string[] } 
   return {
     fetchOfferText: async () => 'We need a senior React engineer with TypeScript.',
     extractOffer: async () => ({ value: OFFER, costUsd: 0.01 }),
+    extractOfferFromImage: async () => ({ value: OFFER, costUsd: 0.01 }),
     planTopics: async () => ({ value: { topics: TOPICS }, costUsd: 0.03 }),
     writeCardsForTopic: async (topic) => {
       if (options.failOnTopic === topic.slug) {
