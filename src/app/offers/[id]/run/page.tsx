@@ -57,18 +57,26 @@ async function DoneView({ offerId }: { offerId: string }) {
 
   const { data: links } = await db()
     .from('card_offers')
-    .select('cards!inner(id, front, back, kind, status, provenance, topics(name))')
+    .select('cards!inner(id, front, back, kind, status, provenance, topics(name), review_state(state))')
     .eq('offer_id', offerId);
 
   const byTopic = new Map<string, FlashcardData[]>();
+  let activeCount = 0;
+  let readyCount = 0;
   for (const link of links ?? []) {
     const card = link.cards as unknown as {
       front: string;
       back: string;
       kind: string;
+      status: string;
       provenance: FlashcardData['provenance'];
       topics: { name: string } | null;
+      review_state: { state: number } | null;
     };
+    if (card.status === 'active') {
+      activeCount++;
+      if ((card.review_state?.state ?? 0) >= 2) readyCount++;
+    }
     const topic = card.topics?.name ?? 'Other';
     const list = byTopic.get(topic) ?? [];
     list.push({ front: card.front, back: card.back, kind: card.kind, provenance: card.provenance });
@@ -76,6 +84,7 @@ async function DoneView({ offerId }: { offerId: string }) {
   }
 
   const total = [...byTopic.values()].reduce((n, list) => n + list.length, 0);
+  const readyPct = activeCount > 0 ? Math.round((readyCount / activeCount) * 100) : null;
 
   return (
     <div className="space-y-6">
@@ -85,7 +94,15 @@ async function DoneView({ offerId }: { offerId: string }) {
           {offer?.company ? ` · ${offer.company}` : ''}
         </h1>
         <p className="text-sm text-muted-foreground">
-          {total} card{total === 1 ? '' : 's'} in the pool from this offer.{' '}
+          {total} card{total === 1 ? '' : 's'} in the pool from this offer
+          {readyPct !== null && (
+            <>
+              {' · '}
+              <span className="font-medium text-foreground">{readyPct}% ready</span>
+              {` (${readyCount}/${activeCount} in Review or beyond)`}
+            </>
+          )}
+          .{' '}
           <Link href="/" className="underline underline-offset-4">
             Review them →
           </Link>
