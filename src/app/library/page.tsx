@@ -1,11 +1,14 @@
-import { Flashcard, type FlashcardData } from '@/components/flashcard';
 import { db } from '@/lib/db';
+import type { FlashcardData } from '@/components/flashcard';
+
+import { LibraryClient, type LibraryCard } from './library-client';
 
 export const dynamic = 'force-dynamic';
 
 const STATE_LABEL = ['new', 'learning', 'review', 'relearning'];
+const PAGE_SIZE = 200;
 
-/** Every card in the pool, grouped by topic. Semantic search arrives in Layer 2. */
+/** The whole card pool, grouped by topic, answers hidden until asked for. */
 export default async function LibraryPage({
   searchParams,
 }: {
@@ -15,22 +18,23 @@ export default async function LibraryPage({
 
   let query = db()
     .from('cards')
-    .select('id, front, back, kind, status, provenance, created_at, topics(name), review_state(state, reps)')
+    .select('id, front, back, kind, status, provenance, created_at, topics(name), review_state(state)', {
+      count: 'exact',
+    })
     .order('created_at', { ascending: false })
-    .limit(200);
+    .limit(PAGE_SIZE);
 
   if (q?.trim()) {
     const term = `%${q.trim()}%`;
     query = query.or(`front.ilike.${term},back.ilike.${term}`);
   }
 
-  const { data: cards, error } = await query;
+  const { data: cards, error, count } = await query;
 
-  type Row = FlashcardData & { id: string; state: string | null; suspended: boolean };
-  const byTopic = new Map<string, Row[]>();
+  const byTopic = new Map<string, LibraryCard[]>();
   for (const card of cards ?? []) {
     const topic = (card.topics as unknown as { name: string } | null)?.name ?? 'Other';
-    const review = (card.review_state as unknown as { state: number } | null);
+    const review = card.review_state as unknown as { state: number } | null;
     const list = byTopic.get(topic) ?? [];
     list.push({
       id: card.id,
@@ -44,14 +48,15 @@ export default async function LibraryPage({
     byTopic.set(topic, list);
   }
 
-  const total = cards?.length ?? 0;
+  const shown = cards?.length ?? 0;
+  const total = count ?? shown;
 
   return (
     <div className="space-y-6">
       <header className="flex items-baseline justify-between">
         <h1 className="text-2xl font-semibold tracking-tight">Library</h1>
         <span className="text-sm text-muted-foreground">
-          {total} card{total === 1 ? '' : 's'}
+          {shown < total ? `showing ${shown} of ${total} cards` : `${total} card${total === 1 ? '' : 's'}`}
         </span>
       </header>
 
@@ -67,34 +72,13 @@ export default async function LibraryPage({
 
       {error && <p className="text-destructive">Could not load cards: {error.message}</p>}
 
-      {!error && total === 0 && (
+      {!error && shown === 0 && (
         <p className="py-12 text-center text-sm text-muted-foreground">
           {q ? `No cards match “${q}”.` : 'No cards yet — submit an offer to generate some.'}
         </p>
       )}
 
-      {[...byTopic.entries()].map(([topic, rows]) => (
-        <section key={topic} className="space-y-3">
-          <h2 className="text-sm font-medium uppercase tracking-widest text-muted-foreground">
-            {topic} · {rows.length}
-          </h2>
-          {rows.map((row) => (
-            <Flashcard
-              key={row.id}
-              card={row}
-              className={row.suspended ? 'opacity-50' : undefined}
-              footer={
-                row.state ? (
-                  <p className="text-xs text-muted-foreground">
-                    {row.suspended ? 'suspended · ' : ''}
-                    {row.state}
-                  </p>
-                ) : undefined
-              }
-            />
-          ))}
-        </section>
-      ))}
+      {shown > 0 && <LibraryClient groups={[...byTopic.entries()]} />}
     </div>
   );
 }

@@ -1,5 +1,6 @@
 'use client';
 
+import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
 
 import { Flashcard, Kbd, type FlashcardData } from '@/components/flashcard';
@@ -20,18 +21,25 @@ const RATINGS = [
 ] as const;
 
 /**
- * The daily loop, built to be driven without touching the mouse:
- * Space reveals, 1–4 rates, the next card appears. Interval previews sit on the
- * rating buttons so each choice says what it costs.
+ * The daily loop, driven without the mouse:
+ *   Space  reveal            1–4  rate
+ *   →      skip (to the end of the queue — FSRS state untouched)
+ *   ←      take back the last skip
+ *
+ * Skipping is queue reordering only. A skipped card stays due; it just stops
+ * blocking the session.
  */
 export function ReviewsClient({ initial }: { initial: DueCard[] }) {
+  const router = useRouter();
   const [queue, setQueue] = useState(initial);
+  const [skipped, setSkipped] = useState<DueCard[]>([]);
   const [revealed, setRevealed] = useState(false);
   const [pending, setPending] = useState(false);
   const [done, setDone] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   const current = queue[0];
+  const remaining = queue.length + skipped.length;
 
   const rate = useCallback(
     async (rating: number) => {
@@ -48,23 +56,62 @@ export function ReviewsClient({ initial }: { initial: DueCard[] }) {
           const body = (await response.json().catch(() => ({}))) as { error?: string };
           throw new Error(body.error ?? `HTTP ${response.status}`);
         }
-        setQueue((q) => q.slice(1));
+        setQueue((q) => {
+          const next = q.slice(1);
+          // The last card was rated: skipped cards return for a second pass.
+          if (next.length === 0) {
+            setSkipped((s) => {
+              if (s.length > 0) setTimeout(() => setQueue(s), 0);
+              return [];
+            });
+          }
+          return next;
+        });
         setRevealed(false);
         setDone((d) => d + 1);
+        // Refreshes the server-rendered due badge in the nav.
+        router.refresh();
       } catch (e) {
         setError(e instanceof Error ? e.message : 'rating failed');
       } finally {
         setPending(false);
       }
     },
-    [current, pending],
+    [current, pending, router],
   );
+
+  const skip = useCallback(() => {
+    if (!current) return;
+    setSkipped((s) => [...s, current]);
+    setQueue((q) => q.slice(1));
+    setRevealed(false);
+  }, [current]);
+
+  const unskip = useCallback(() => {
+    setSkipped((s) => {
+      if (s.length === 0) return s;
+      const last = s[s.length - 1];
+      setQueue((q) => [last, ...q]);
+      setRevealed(false);
+      return s.slice(0, -1);
+    });
+  }, []);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.target instanceof HTMLElement && /input|textarea/i.test(event.target.tagName)) return;
-      if (!current) return;
 
+      if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        skip();
+        return;
+      }
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        unskip();
+        return;
+      }
+      if (!current) return;
       if (!revealed && (event.code === 'Space' || event.key === 'Enter')) {
         event.preventDefault();
         setRevealed(true);
@@ -80,18 +127,30 @@ export function ReviewsClient({ initial }: { initial: DueCard[] }) {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [current, revealed, rate]);
+  }, [current, revealed, rate, skip, unskip]);
+
+  if (!current && skipped.length > 0) {
+    // Everything left was skipped — offer the second pass explicitly.
+    return (
+      <div className="flex flex-col items-center gap-4 py-24 text-center">
+        <p className="font-serif text-2xl">
+          {skipped.length} skipped card{skipped.length === 1 ? '' : 's'} left
+        </p>
+        <Button size="lg" onClick={() => { setQueue(skipped); setSkipped([]); }}>
+          Review them now
+        </Button>
+      </div>
+    );
+  }
 
   if (!current) {
     return (
       <div className="flex flex-col items-center gap-3 py-24 text-center">
-        <p className="font-serif text-2xl">
-          {done > 0 ? 'All done.' : 'Nothing due today.'}
-        </p>
+        <p className="font-serif text-2xl">{done > 0 ? 'All done.' : 'Nothing due here.'}</p>
         <p className="text-sm text-muted-foreground">
           {done > 0
             ? `${done} card${done === 1 ? '' : 's'} reviewed — come back when the next ones fall due.`
-            : 'Generate cards from an offer, approve them, and they will appear here.'}
+            : 'Nothing in this scope is due. Clear the filter or approve more cards.'}
         </p>
       </div>
     );
@@ -101,16 +160,23 @@ export function ReviewsClient({ initial }: { initial: DueCard[] }) {
     <div className="space-y-5">
       <div className="flex items-baseline justify-between text-sm text-muted-foreground">
         <span>
-          {done + 1} of {done + queue.length}
+          {done + 1} of {done + remaining}
+          {skipped.length > 0 && ` · ${skipped.length} skipped`}
         </span>
-        <span className="hidden gap-3 sm:flex">
+        <span className="hidden items-center gap-3 sm:flex">
           {revealed ? (
             <>
               <Kbd>1</Kbd>–<Kbd>4</Kbd> rate
             </>
           ) : (
             <>
-              <Kbd>Space</Kbd> show answer
+              <Kbd>Space</Kbd> answer
+            </>
+          )}
+          <Kbd>→</Kbd> skip
+          {skipped.length > 0 && (
+            <>
+              <Kbd>←</Kbd> back
             </>
           )}
         </span>
@@ -135,9 +201,14 @@ export function ReviewsClient({ initial }: { initial: DueCard[] }) {
           ))}
         </div>
       ) : (
-        <Button size="lg" className="w-full py-6" onClick={() => setRevealed(true)}>
-          Show answer
-        </Button>
+        <div className="flex gap-2">
+          <Button size="lg" className="flex-1 py-6" onClick={() => setRevealed(true)}>
+            Show answer
+          </Button>
+          <Button size="lg" variant="outline" className="py-6" onClick={skip}>
+            Skip →
+          </Button>
+        </div>
       )}
 
       {error && <p className="text-sm text-destructive">{error}</p>}

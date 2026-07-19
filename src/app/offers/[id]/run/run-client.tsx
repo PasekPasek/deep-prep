@@ -91,6 +91,16 @@ export function RunClient({ initial }: { initial: RunState }) {
     setCursor((c) => Math.max(0, c - 1));
   }, []);
 
+  // Triage decisions live only in this component until save — warn before losing them.
+  useEffect(() => {
+    if (!(triaging || summarising) || decisions.length === 0) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [triaging, summarising, decisions.length]);
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (editing) return;
@@ -175,9 +185,33 @@ export function RunClient({ initial }: { initial: RunState }) {
       <div className="space-y-4">
         <h1 className="text-2xl font-semibold tracking-tight">Run failed</h1>
         <p className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm">{run.error}</p>
-        <p className="text-sm text-muted-foreground">
-          Progress up to this point was saved; resuming continues from the last completed step.
-        </p>
+        <div className="flex items-center gap-3">
+          <Button
+            size="lg"
+            disabled={submitting}
+            onClick={async () => {
+              setSubmitting(true);
+              setError(null);
+              try {
+                const response = await fetch(`/api/runs/${run.id}/resume`, { method: 'POST' });
+                const body = (await response.json()) as { status?: string; error?: string };
+                if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`);
+                // Back into the in-flight view; polling picks it up from here.
+                setRun((r) => ({ ...r, status: body.status ?? 'pending', error: null }));
+              } catch (e) {
+                setError(e instanceof Error ? e.message : 'resume failed');
+              } finally {
+                setSubmitting(false);
+              }
+            }}
+          >
+            {submitting ? 'Resuming…' : 'Resume from checkpoint'}
+          </Button>
+          <p className="text-sm text-muted-foreground">
+            Work completed before the failure is kept — only the failed step re-runs.
+          </p>
+        </div>
+        {error && <p className="text-sm text-destructive">{error}</p>}
       </div>
     );
   }

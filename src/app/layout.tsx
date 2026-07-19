@@ -3,6 +3,7 @@ import { Geist, Geist_Mono, Newsreader } from "next/font/google";
 import Link from "next/link";
 import "./globals.css";
 
+import { auth, signOut } from "@/auth";
 import { db } from "@/lib/db";
 import { THEME_INIT_SCRIPT, ThemeToggle } from "@/components/theme-toggle";
 
@@ -46,7 +47,7 @@ export default async function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const due = await dueCount();
+  const [due, session] = await Promise.all([dueCount(), auth()]);
 
   return (
     <html
@@ -79,8 +80,23 @@ export default async function RootLayout({
                 Library
               </Link>
             </div>
-            <div className="ml-auto">
+            <div className="ml-auto flex items-center gap-3">
               <ThemeToggle />
+              {session?.user && (
+                <form
+                  action={async () => {
+                    "use server";
+                    await signOut({ redirectTo: "/login" });
+                  }}
+                >
+                  <button
+                    type="submit"
+                    className="text-sm text-muted-foreground hover:text-foreground"
+                  >
+                    Sign out
+                  </button>
+                </form>
+              )}
             </div>
           </nav>
         </header>
