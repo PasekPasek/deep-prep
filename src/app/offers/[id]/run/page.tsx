@@ -5,6 +5,7 @@ import { Flashcard, type FlashcardData } from '@/components/flashcard';
 import { db } from '@/lib/db';
 import { getDraftCards, getPlan, loadRun } from '@/orchestrator/state';
 
+import { RunAgainButton } from './run-again-button';
 import { RunClient } from './run-client';
 
 export const dynamic = 'force-dynamic';
@@ -89,6 +90,9 @@ async function DoneView({ offerId }: { offerId: string }) {
             Review them →
           </Link>
         </p>
+        <div className="pt-1">
+          <RunAgainButton offerId={offerId} />
+        </div>
       </header>
 
       {total === 0 && (

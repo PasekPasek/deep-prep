@@ -17,8 +17,10 @@ const STATUS_VARIANT: Record<string, 'default' | 'secondary' | 'outline' | 'dest
 export default async function OffersPage() {
   const { data: offers } = await db()
     .from('offers')
-    .select('id, company, role, seniority, raw_input, created_at, runs(id, status), card_offers(card_id)')
+    .select('id, company, role, seniority, raw_input, created_at, runs(id, status, created_at), card_offers(card_id)')
     .order('created_at', { ascending: false })
+    // With Run again an offer can have several runs — the row must link the latest.
+    .order('created_at', { referencedTable: 'runs', ascending: false })
     .limit(50);
 
   return (
