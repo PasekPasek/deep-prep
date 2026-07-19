@@ -1,5 +1,6 @@
 import { SelectFilter } from '@/components/select-filter';
 import { db } from '@/lib/db';
+import { embed, toVectorLiteral } from '@/lib/embeddings';
 import type { FlashcardData } from '@/components/flashcard';
 
 import { LibraryClient, type LibraryCard } from './library-client';
@@ -30,9 +31,26 @@ export default async function LibraryPage({
     .order('created_at', { ascending: false })
     .limit(PAGE_SIZE);
 
+  // Search is semantic: the query is embedded and matched against card embeddings —
+  // "closures" finds the useEffect-cleanup card even with zero shared words. Ordered
+  // ids come from match_cards; full rows are fetched separately. Falls back to
+  // substring match if the embedding call fails, so search never breaks outright.
+  let semanticOrder: Map<string, number> | null = null;
   if (q?.trim()) {
-    const term = `%${q.trim()}%`;
-    query = query.or(`front.ilike.${term},back.ilike.${term}`);
+    try {
+      const embedding = await embed(q.trim());
+      const { data: matches, error: rpcError } = await db().rpc('match_cards', {
+        query_embedding: toVectorLiteral(embedding),
+        match_count: 50,
+      });
+      if (rpcError) throw new Error(rpcError.message);
+      semanticOrder = new Map((matches ?? []).map((m, i) => [m.card_id, i]));
+      query = query.in('id', [...semanticOrder.keys()]);
+    } catch (e) {
+      console.warn('[library] semantic search failed, falling back to substring:', e);
+      const term = `%${q.trim()}%`;
+      query = query.or(`front.ilike.${term},back.ilike.${term}`);
+    }
   }
 
   const { data: cards, error, count } = await query;
@@ -73,11 +91,23 @@ export default async function LibraryPage({
         (stateFilter === 'suspended' ? c.suspended : !c.suspended && c.state === stateFilter)),
   );
 
-  const byTopic = new Map<string, LibraryCard[]>();
-  for (const card of filtered) {
-    const list = byTopic.get(card.topic) ?? [];
-    list.push(card);
-    byTopic.set(card.topic, list);
+  // Search results keep their relevance order in one flat group; browsing without a
+  // query groups by topic. Interleaving the two would destroy whichever order the
+  // user actually asked for.
+  const groups: [string, LibraryCard[]][] = [];
+  if (semanticOrder) {
+    const ranked = [...filtered].sort(
+      (a, b) => (semanticOrder.get(a.id) ?? 999) - (semanticOrder.get(b.id) ?? 999),
+    );
+    if (ranked.length > 0) groups.push([`Results for “${q!.trim()}” · by relevance`, ranked]);
+  } else {
+    const byTopic = new Map<string, LibraryCard[]>();
+    for (const card of filtered) {
+      const list = byTopic.get(card.topic) ?? [];
+      list.push(card);
+      byTopic.set(card.topic, list);
+    }
+    groups.push(...byTopic.entries());
   }
 
   const shown = filtered.length;
@@ -135,7 +165,7 @@ export default async function LibraryPage({
         </p>
       )}
 
-      {shown > 0 && <LibraryClient groups={[...byTopic.entries()]} />}
+      {shown > 0 && <LibraryClient groups={groups} />}
     </div>
   );
 }
