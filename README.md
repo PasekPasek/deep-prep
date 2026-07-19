@@ -524,10 +524,15 @@ except `verify:retrieval`.
   with a single-flight guard, per-offer readiness (% of active cards FSRS has promoted
   to Review), semantic library search over card embeddings, screenshot input (private
   bucket → short-lived signed URL → vision extractor), and the guardrail set above.
-- **Layer 3.** Web fallback cascade (Tavily / Context7 / Stack Overflow) with per-topic
-  budgets and external provenance.
-- **Layer 4.** True multi-agent split — Planner / parallel Researchers / Writer / Critic
-  revision loop over the scratchpad. Schema-ready since the first migration.
+- **Layer 3 — complete.** Web fallback cascade (Context7 behind an optional key /
+  Tavily / Stack Overflow), fired only on thin corpus coverage, capped at 6 engine
+  calls per topic, URLs entering the same code-enforced provenance filter as sections.
+- **Layer 4 — complete.** True multi-agent pipeline: parallel Researchers (batches of
+  3 per invocation, Promise.allSettled so sibling notes survive a failure) writing
+  synthesized notes to the scratchpad; a Writer that sees ONLY its topic's note; a
+  Critic running code dedup then an LLM rubric, with ≤2 revision loops and
+  still-rejected cards surfaced to the reviewer as flags. Offers can also be a custom
+  text brief ("TypeScript, React, Kubernetes — senior"), no job ad required.
 - **Layer 5.** Eval harness: validated LLM-as-judge, frozen regression set, results
   table across prompt versions.
 

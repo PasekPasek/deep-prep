@@ -30,6 +30,7 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
   const step = (run.current_step ?? {}) as {
     topicIdx?: number;
     dedup?: { linkedCount: number; linked: { front: string; existingFront: string; similarity: number }[] };
+    criticFlags?: { front: string; reason: string; note: string }[];
   };
 
   return (
@@ -43,6 +44,7 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
         topicIdx: step.topicIdx ?? null,
         draftCards: getDraftCards(run),
         dedup: step.dedup ?? null,
+        criticFlags: step.criticFlags ?? null,
       }}
     />
   );

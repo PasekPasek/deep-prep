@@ -1,6 +1,8 @@
 import 'server-only';
 
-import type { DraftCard } from './contracts';
+import { callAgent, type CallMeta } from './call';
+import { CriticVerdict, type DraftCard } from './contracts';
+import { CRITIC_SYSTEM, criticPrompt } from './prompts/critic';
 import { db } from '@/lib/db';
 import { embedMany, toVectorLiteral } from '@/lib/embeddings';
 
@@ -94,4 +96,48 @@ export async function dedupDrafts(
   }
 
   return { kept, linked };
+}
+
+/**
+ * LLM rubric check (Layer 4). Runs AFTER code dedup, on the kept drafts only.
+ *
+ * The verdict maps rejected indices back to full cards; out-of-range or
+ * contradictory indices from the model are discarded — a card is rejected only if
+ * the verdict names it coherently. Defaults to acceptance: the rubric is a defect
+ * net in front of a human reviewer, not a gatekeeper with taste.
+ */
+export type RubricResult = {
+  accepted: DraftCard[];
+  rejected: { card: DraftCard; reason: string; note: string }[];
+  costUsd: number;
+};
+
+export async function rubricCheck(drafts: DraftCard[], meta: CallMeta = {}): Promise<RubricResult> {
+  if (drafts.length === 0) return { accepted: [], rejected: [], costUsd: 0 };
+
+  const result = await callAgent({
+    role: 'critic',
+    schema: CriticVerdict,
+    system: CRITIC_SYSTEM,
+    prompt: criticPrompt(drafts),
+    meta,
+  });
+
+  const rejectedByIndex = new Map<number, { reason: string; note: string }>();
+  for (const r of result.value.rejected) {
+    const index = Math.round(r.index);
+    if (index >= 0 && index < drafts.length && !rejectedByIndex.has(index)) {
+      rejectedByIndex.set(index, { reason: r.reason, note: r.note });
+    }
+  }
+
+  const accepted: DraftCard[] = [];
+  const rejected: RubricResult['rejected'] = [];
+  for (const [i, card] of drafts.entries()) {
+    const rejection = rejectedByIndex.get(i);
+    if (rejection) rejected.push({ card, ...rejection });
+    else accepted.push(card);
+  }
+
+  return { accepted, rejected, costUsd: result.costUsd };
 }

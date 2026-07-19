@@ -15,7 +15,9 @@ export function OfferForm() {
   const router = useRouter();
   const fileInput = useRef<HTMLInputElement>(null);
   const [url, setUrl] = useState('');
-  const [pending, setPending] = useState<'url' | 'file' | null>(null);
+  const [customOpen, setCustomOpen] = useState(false);
+  const [customText, setCustomText] = useState('');
+  const [pending, setPending] = useState<'url' | 'file' | 'text' | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function start(request: Promise<Response>) {
@@ -85,7 +87,46 @@ export function OfferForm() {
         >
           {pending === 'file' ? 'Uploading…' : 'Screenshot…'}
         </Button>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={pending !== null}
+          onClick={() => setCustomOpen((v) => !v)}
+        >
+          Custom…
+        </Button>
       </form>
+
+      {customOpen && (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (customText.trim().length < 10 || pending) return;
+            setPending('text');
+            void start(
+              fetch('/api/pipeline', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: customText.trim() }),
+              }),
+            );
+          }}
+          className="space-y-2"
+        >
+          <textarea
+            value={customText}
+            onChange={(e) => setCustomText(e.target.value)}
+            disabled={pending !== null}
+            rows={3}
+            placeholder={'No offer needed — describe what to study, e.g.\n"TypeScript, React, Kubernetes — senior frontend developer"'}
+            className="w-full rounded-md border bg-transparent px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          />
+          <Button type="submit" disabled={pending !== null || customText.trim().length < 10}>
+            {pending === 'text' ? 'Starting…' : 'Generate from description'}
+          </Button>
+        </form>
+      )}
+
       {error && <p className="text-sm text-destructive">{error}</p>}
     </div>
   );

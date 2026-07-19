@@ -14,9 +14,13 @@ import { createRun } from '@/orchestrator/state';
 
 export const runtime = 'nodejs';
 
-/** Either a fresh offer by URL, or a re-run of an existing offer. */
+/**
+ * A fresh offer by URL, a custom text brief ("TypeScript, React, Kubernetes —
+ * senior"), or a re-run of an existing offer.
+ */
 const Body = z.union([
   z.object({ url: z.string().url() }),
+  z.object({ text: z.string().min(10).max(40_000) }),
   z.object({ offerId: z.string().uuid() }),
 ]);
 
@@ -58,9 +62,14 @@ export async function POST(request: Request) {
       }
       offerId = offer.id;
     } else {
+      const isUrl = 'url' in parsed.data;
       const { data: offer, error } = await db()
         .from('offers')
-        .insert({ input_kind: 'url', raw_input: parsed.data.url })
+        .insert(
+          isUrl
+            ? { input_kind: 'url', raw_input: (parsed.data as { url: string }).url }
+            : { input_kind: 'manual', raw_input: (parsed.data as { text: string }).text },
+        )
         .select('id')
         .single();
       if (error) return serverError(`could not create offer: ${error.message}`);

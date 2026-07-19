@@ -121,3 +121,49 @@ ${sources}
 export const NO_SOURCES_NOTE =
   'No corpus material was found for this topic. Write no cards — returning an empty ' +
   'array is correct here, because a card without a source cannot be verified.';
+
+/**
+ * Layer 4: the Writer works from a Researcher's synthesized note, never from raw
+ * sections. Citation refs come from the note's inline (section:...)/(url:...) markers.
+ */
+export function writerFromNotePrompt(topic: PlanTopic, noteContent: string): string {
+  return `Write flashcards for the topic "${topic.name}" (slug: ${topic.slug}).
+
+Concepts to cover:
+${topic.concepts.map((c) => `- ${c}`).join('\n')}
+
+Write at most ${topic.estimatedCards} cards. Use topicSlug "${topic.slug}" on every card.
+
+Your ONLY source is the research note below. Its facts carry inline citations like
+(section:<id>) or (url:<...>) — copy the citation(s) a card's answer is based on into
+that card's provenance, using the ref exactly as written. Skip anything the note marks
+NOT COVERED.
+
+--- RESEARCH NOTE ---
+${noteContent}
+--- END NOTE ---`;
+}
+
+/** Revision pass: the Critic rejected specific cards; fix only those. */
+export function writerRevisionPrompt(
+  topic: PlanTopic,
+  noteContent: string,
+  rejected: { front: string; back: string; reason: string; note: string }[],
+): string {
+  return `Some of your flashcards for "${topic.name}" (slug: ${topic.slug}) were rejected in review.
+Rewrite each one to fix the stated problem, using ONLY the research note below. If a
+card cannot be fixed from the note (e.g. the underlying fact is not there), drop it —
+return fewer cards rather than an unfixable one.
+
+Rejected cards:
+${rejected
+  .map((r, i) => `${i + 1}. reason: ${r.reason} — ${r.note}\n   Q: ${r.front}\n   A: ${r.back}`)
+  .join('\n')}
+
+Citation rules as before: copy (section:<id>)/(url:<...>) refs from the note into
+provenance exactly as written.
+
+--- RESEARCH NOTE ---
+${noteContent}
+--- END NOTE ---`;
+}

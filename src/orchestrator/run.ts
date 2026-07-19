@@ -1,17 +1,21 @@
 import 'server-only';
 
-import type { DraftCard, ExtractedOffer, PlanTopic, RunStatus } from '@/agents/contracts';
-import { dedupDrafts, type DedupResult } from '@/agents/critic';
+import type { DraftCard, ExtractedOffer, PlanTopic, ResearchNote, RunStatus } from '@/agents/contracts';
+import { dedupDrafts, rubricCheck, type DedupResult, type RubricResult } from '@/agents/critic';
 import { extractOffer, extractOfferFromImage, fetchOfferText } from '@/agents/extractor';
-import { planTopics, writeCardsForTopic, type TopicResult } from '@/agents/generator';
+import { planTopics } from '@/agents/generator';
+import { researchTopic, type ResearchResult } from '@/agents/researcher';
+import { reviseRejected, writeFromNote, type WriteResult } from '@/agents/writer';
 import { db } from '@/lib/db';
 
 import {
   appendDraftCards,
   getCurrentStep,
   getDraftCards,
+  getNote,
   getPlan,
   loadRun,
+  saveNote,
   saveRun,
   type CurrentStep,
   type RunRow,
@@ -72,7 +76,19 @@ export type Deps = {
     offer: ExtractedOffer,
     meta: { runId: string },
   ) => Promise<{ value: { topics: PlanTopic[] }; costUsd: number }>;
-  writeCardsForTopic: (topic: PlanTopic, meta: { runId: string }) => Promise<TopicResult>;
+  researchTopic: (topic: PlanTopic, meta: { runId: string }) => Promise<ResearchResult>;
+  writeFromNote: (
+    topic: PlanTopic,
+    note: ResearchNote,
+    meta: { runId: string },
+  ) => Promise<WriteResult>;
+  reviseRejected: (
+    topic: PlanTopic,
+    note: ResearchNote,
+    rejected: { front: string; back: string; reason: string; note: string }[],
+    meta: { runId: string },
+  ) => Promise<WriteResult>;
+  rubricCheck: (drafts: DraftCard[], meta: { runId: string }) => Promise<RubricResult>;
   dedupDrafts: (drafts: DraftCard[], offerId: string) => Promise<DedupResult>;
 };
 
@@ -81,9 +97,17 @@ export const defaultDeps: Deps = {
   extractOffer: (text, meta) => extractOffer(text, meta),
   extractOfferFromImage: (imageUrl, meta) => extractOfferFromImage(imageUrl, meta),
   planTopics: (offer, meta) => planTopics(offer, meta),
-  writeCardsForTopic: (topic, meta) => writeCardsForTopic(topic, meta),
+  researchTopic: (topic, meta) => researchTopic(topic, meta),
+  writeFromNote: (topic, note, meta) => writeFromNote(topic, note, meta),
+  reviseRejected: (topic, note, rejected, meta) => reviseRejected(topic, note, rejected, meta),
+  rubricCheck: (drafts, meta) => rubricCheck(drafts, meta),
   dedupDrafts: (drafts, offerId) => dedupDrafts(drafts, offerId),
 };
+
+/** Researchers run in parallel within one invocation, in batches of this size. */
+export const RESEARCH_BATCH = 3;
+/** Critic → Writer revision loops before remaining rejects are surfaced to the human. */
+export const MAX_REVISION_LOOPS = 2;
 
 export type StepOutcome = {
   status: RunStatus;
@@ -131,10 +155,13 @@ export async function advanceRun(runId: string, deps: Deps = defaultDeps): Promi
       case 'planning':
         return await stepPlan(run, deps);
       case 'researching':
+        return await stepResearch(run, deps, step.topicIdx ?? 0);
       case 'writing':
-        return await stepTopic(run, deps, step.topicIdx ?? 0);
+        return step.revision
+          ? await stepRevise(run, deps, step)
+          : await stepWrite(run, deps, step.topicIdx ?? 0);
       case 'critiquing':
-        return await stepCritique(run, deps);
+        return await stepCritique(run, deps, step.loops ?? 0);
       case 'awaiting_approval':
         return { status: 'awaiting_approval', more: false, note: 'waiting for human review' };
       case 'done':
@@ -196,6 +223,11 @@ async function stepExtract(run: RunRow, deps: Deps): Promise<StepOutcome> {
   } else if (offer.input_kind === 'url') {
     const text = await deps.fetchOfferText(offer.raw_input);
     extracted = await deps.extractOffer(text, { runId: run.id });
+  } else if (offer.input_kind === 'manual') {
+    // A custom brief ("TypeScript, React, Kubernetes — senior") goes straight to the
+    // Extractor: it normalises a bare tech list into requirements the same way it
+    // digests a full offer.
+    extracted = await deps.extractOffer(offer.raw_input, { runId: run.id });
   } else {
     throw new Error(`unknown input_kind "${offer.input_kind}"`);
   }
@@ -253,78 +285,223 @@ async function stepPlan(run: RunRow, deps: Deps): Promise<StepOutcome> {
   return { status: 'researching', more: true, note: `planned ${plan.value.topics.length} topics` };
 }
 
-async function stepTopic(run: RunRow, deps: Deps, topicIdx: number): Promise<StepOutcome> {
+/**
+ * Research phase (Layer 4): a batch of Researchers runs in parallel inside one
+ * invocation, each writing its own scratchpad row. Batching keeps a single
+ * invocation inside serverless limits while still cutting wall time ~RESEARCH_BATCH×.
+ */
+async function stepResearch(run: RunRow, deps: Deps, topicIdx: number): Promise<StepOutcome> {
   const plan = getPlan(run);
   if (!plan) throw new Error('run reached researching without a plan');
 
-  const topic = plan.topics[topicIdx];
-  if (!topic) {
-    // All topics consumed (resume edge case) — go through the critic.
-    await saveRun(run.id, { status: 'critiquing', currentStep: { phase: 'critiquing' } });
-    return { status: 'critiquing', more: true, note: 'all topics done, deduplicating' };
+  const batch = plan.topics.slice(topicIdx, topicIdx + RESEARCH_BATCH);
+  if (batch.length === 0) {
+    await saveRun(run.id, { status: 'writing', currentStep: { phase: 'writing', topicIdx: 0 } });
+    return { status: 'writing', more: true, note: 'research done, writing cards' };
   }
 
-  const result = await deps.writeCardsForTopic(topic, { runId: run.id });
-  await appendDraftCards(run.id, result.cards);
+  // allSettled, not all: when one researcher in the batch fails, the others' notes
+  // are still saved BEFORE the step fails, so resume re-runs the batch against
+  // idempotent saveNote instead of redoing finished work.
+  const results = await Promise.allSettled(
+    batch.map((topic) => deps.researchTopic(topic, { runId: run.id })),
+  );
+
+  let cost = 0;
+  const parts: string[] = [];
+  const errors: string[] = [];
+  for (const [i, settled] of results.entries()) {
+    if (settled.status === 'rejected') {
+      errors.push(`${batch[i].slug}: ${settled.reason instanceof Error ? settled.reason.message : settled.reason}`);
+      continue;
+    }
+    const result = settled.value;
+    cost += result.costUsd;
+    if (result.note) {
+      await saveNote(run.id, result.note);
+      parts.push(`${batch[i].slug}: noted (${result.sectionsFound}s/${result.externalFound}w)`);
+    } else {
+      parts.push(`${batch[i].slug}: no material`);
+    }
+  }
+
+  if (errors.length > 0) {
+    // Cost of the successful researchers is booked before failing, or the budget
+    // guard would be blind to it.
+    if (cost > 0) await saveRun(run.id, { addCostUsd: cost });
+    throw new Error(`research failed for ${errors.length} topic(s): ${errors.join('; ')}`);
+  }
+
+  const nextIdx = topicIdx + batch.length;
+  const done = nextIdx >= plan.topics.length;
+  await saveRun(run.id, {
+    status: done ? 'writing' : 'researching',
+    currentStep: done
+      ? { phase: 'writing', topicIdx: 0 }
+      : { phase: 'researching', topicIdx: nextIdx },
+    addCostUsd: cost,
+  });
+
+  return { status: done ? 'writing' : 'researching', more: true, note: parts.join(' · ') };
+}
+
+/** Writing phase: one topic per step, from that topic's scratchpad note only. */
+async function stepWrite(run: RunRow, deps: Deps, topicIdx: number): Promise<StepOutcome> {
+  const plan = getPlan(run);
+  if (!plan) throw new Error('run reached writing without a plan');
+
+  const topic = plan.topics[topicIdx];
+  if (!topic) {
+    await saveRun(run.id, { status: 'critiquing', currentStep: { phase: 'critiquing', loops: 0 } });
+    return { status: 'critiquing', more: true, note: 'all topics written, critiquing' };
+  }
+
+  const note = await getNote(run.id, topic.slug);
+  let outcomeNote: string;
+  let cost = 0;
+
+  if (!note) {
+    outcomeNote = `${topic.slug}: no research note, skipped`;
+  } else {
+    const result = await deps.writeFromNote(topic, note, { runId: run.id });
+    await appendDraftCards(run.id, result.cards);
+    cost = result.costUsd;
+    outcomeNote =
+      `${topic.slug}: ${result.cards.length} cards from note` +
+      (result.dropped.length > 0 ? ` (${result.dropped.length} dropped: unusable provenance)` : '');
+  }
 
   const isLast = topicIdx + 1 >= plan.topics.length;
   await saveRun(run.id, {
-    status: isLast ? 'critiquing' : 'researching',
+    status: isLast ? 'critiquing' : 'writing',
     currentStep: isLast
-      ? { phase: 'critiquing' }
-      : { phase: 'researching', topicIdx: topicIdx + 1 },
-    addCostUsd: result.costUsd,
+      ? { phase: 'critiquing', loops: 0 }
+      : { phase: 'writing', topicIdx: topicIdx + 1 },
+    addCostUsd: cost,
   });
 
-  const sourcesNote = [
-    result.sectionsFound > 0 ? `${result.sectionsFound} sections` : null,
-    result.externalFound > 0 ? `${result.externalFound} web sources` : null,
-  ]
-    .filter(Boolean)
-    .join(' + ');
-  const note =
-    result.sectionsFound === 0 && result.externalFound === 0
-      ? `${topic.slug}: no material found anywhere, 0 cards`
-      : `${topic.slug}: ${result.cards.length} cards from ${sourcesNote}` +
-        (result.dropped.length > 0 ? ` (${result.dropped.length} dropped: unusable provenance)` : '');
-
-  return { status: isLast ? 'critiquing' : 'researching', more: true, note };
+  return { status: isLast ? 'critiquing' : 'writing', more: true, note: outcomeNote };
 }
 
 /**
- * Critic, Layer 2 shape: deterministic dedup. Drafts near-identical to saved cards
- * are absorbed — the existing card gets linked to this offer and the draft never
- * reaches the reviewer. What was absorbed is recorded on the run for the HITL view.
+ * Critic phase (Layer 4): code dedup first, then the LLM rubric. Rejected
+ * non-duplicates go back to the Writer for at most MAX_REVISION_LOOPS passes;
+ * whatever is still rejected after the cap is surfaced to the reviewer as flags
+ * rather than silently dropped — the human is the final arbiter.
  */
-async function stepCritique(run: RunRow, deps: Deps): Promise<StepOutcome> {
+async function stepCritique(run: RunRow, deps: Deps, loops: number): Promise<StepOutcome> {
   if (!run.offer_id) throw new Error('run has no offer_id');
 
   const drafts = getDraftCards(run);
   const { kept, linked } = await deps.dedupDrafts(drafts, run.offer_id);
+  const rubric = await deps.rubricCheck(kept, { runId: run.id });
+
+  const dedupRecord = {
+    linkedCount: linked.length,
+    linked: linked.map((l) => ({
+      front: l.front,
+      existingCardId: l.existingCardId,
+      existingFront: l.existingFront,
+      similarity: l.similarity,
+    })),
+  };
+
+  if (rubric.rejected.length > 0 && loops < MAX_REVISION_LOOPS) {
+    // Send rejects back to the Writer. Accepted drafts stay; rejected leave the pile
+    // and return (fixed or not at all) through the revision step.
+    await saveRun(run.id, {
+      status: 'writing',
+      currentStep: {
+        phase: 'writing',
+        loops: loops + 1,
+        dedup: dedupRecord,
+        revision: {
+          rejected: rubric.rejected.map((r) => ({
+            topicSlug: r.card.topicSlug,
+            front: r.card.front,
+            back: r.card.back,
+            reason: r.reason,
+            note: r.note,
+          })),
+        },
+      },
+      draftCards: rubric.accepted,
+      addCostUsd: rubric.costUsd,
+    });
+    return {
+      status: 'writing',
+      more: true,
+      note: `critic rejected ${rubric.rejected.length} card(s) — revision loop ${loops + 1}`,
+    };
+  }
+
+  // Loop cap reached (or nothing rejected): rejects become reviewer-facing flags and
+  // stay in the pile — the human decides, with the critic's reasoning attached.
+  const flagged = rubric.rejected.map((r) => ({
+    front: r.card.front,
+    reason: r.reason,
+    note: r.note,
+  }));
 
   await saveRun(run.id, {
     status: 'awaiting_approval',
     currentStep: {
       phase: 'awaiting_approval',
-      dedup: {
-        linkedCount: linked.length,
-        linked: linked.map((l) => ({
-          front: l.front,
-          existingCardId: l.existingCardId,
-          existingFront: l.existingFront,
-          similarity: l.similarity,
-        })),
-      },
+      dedup: dedupRecord,
+      ...(flagged.length > 0 ? { criticFlags: flagged } : {}),
     },
-    draftCards: kept,
+    draftCards: [...rubric.accepted, ...rubric.rejected.map((r) => r.card)],
+    addCostUsd: rubric.costUsd,
   });
 
-  const note =
-    linked.length === 0
-      ? `${kept.length} draft cards ready for review`
-      : `${kept.length} drafts for review, ${linked.length} duplicate(s) linked to existing cards`;
+  const parts = [`${rubric.accepted.length + rubric.rejected.length} drafts for review`];
+  if (linked.length > 0) parts.push(`${linked.length} duplicate(s) linked`);
+  if (flagged.length > 0) parts.push(`${flagged.length} flagged by critic after ${loops} loop(s)`);
+  return { status: 'awaiting_approval', more: false, note: parts.join(', ') };
+}
 
-  return { status: 'awaiting_approval', more: false, note };
+/** Revision step: re-write only what the Critic rejected, one invocation for all. */
+async function stepRevise(run: RunRow, deps: Deps, step: CurrentStep): Promise<StepOutcome> {
+  const plan = getPlan(run);
+  if (!plan) throw new Error('run reached revision without a plan');
+  const rejected = step.revision?.rejected ?? [];
+
+  const byTopic = new Map<string, typeof rejected>();
+  for (const r of rejected) {
+    const list = byTopic.get(r.topicSlug) ?? [];
+    list.push(r);
+    byTopic.set(r.topicSlug, list);
+  }
+
+  let cost = 0;
+  let revised = 0;
+  for (const [slug, items] of byTopic) {
+    const topic = plan.topics.find((t) => t.slug === slug);
+    const note = await getNote(run.id, slug);
+    if (!topic || !note) continue; // nothing to revise against — cards stay dropped
+
+    const result = await deps.reviseRejected(
+      topic,
+      note,
+      items.map(({ front, back, reason, note: criticNote }) => ({ front, back, reason, note: criticNote })),
+      { runId: run.id },
+    );
+    await appendDraftCards(run.id, result.cards);
+    cost += result.costUsd;
+    revised += result.cards.length;
+  }
+
+  await saveRun(run.id, {
+    status: 'critiquing',
+    currentStep: { phase: 'critiquing', loops: step.loops ?? 1, dedup: step.dedup },
+    addCostUsd: cost,
+  });
+
+  return {
+    status: 'critiquing',
+    more: true,
+    note: `revised ${revised} of ${rejected.length} rejected card(s), re-critiquing`,
+  };
 }
 
 /**

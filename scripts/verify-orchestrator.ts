@@ -9,7 +9,6 @@
  * Creates and then deletes its own offers/runs rows.
  */
 import type { ExtractedOffer, PlanTopic } from '../src/agents/contracts';
-import type { TopicResult } from '../src/agents/generator';
 import { db } from '../src/lib/db';
 import { advanceRun, resumeRun, runToCompletion, type Deps } from '../src/orchestrator/run';
 import { createRun, getDraftCards, loadRun } from '../src/orchestrator/state';
@@ -34,7 +33,7 @@ const TOPICS: PlanTopic[] = [
   { slug: 'graphql-basics', name: 'GraphQL', concepts: ['resolvers'], prerequisites: [], estimatedCards: 2 },
 ];
 
-function cardsFor(topic: PlanTopic, n = 2): TopicResult {
+function cardsFor(topic: PlanTopic, n = 2) {
   return {
     cards: Array.from({ length: n }, (_, i) => ({
       topicSlug: topic.slug,
@@ -53,20 +52,71 @@ function cardsFor(topic: PlanTopic, n = 2): TopicResult {
 }
 
 /**
- * Stub agents. `failOnTopic` simulates a crash partway through the topic loop;
- * `duplicateFronts` marks drafts the stub critic should absorb as duplicates.
+ * Stub agents for the Layer 4 pipeline. `failOnTopic` simulates a crash during that
+ * topic's research; `duplicateFronts` marks drafts the stub dedup absorbs;
+ * `rejectOnce` makes the stub rubric reject that front on the first pass only,
+ * exercising the revision loop.
  */
-function stubDeps(options: { failOnTopic?: string; duplicateFronts?: string[] } = {}): Deps {
+function stubDeps(
+  options: {
+    failOnTopic?: string;
+    failOnWrite?: string;
+    duplicateFronts?: string[];
+    rejectOnce?: string;
+  } = {},
+): Deps {
+  let rejected = false;
   return {
     fetchOfferText: async () => 'We need a senior React engineer with TypeScript.',
     extractOffer: async () => ({ value: OFFER, costUsd: 0.01 }),
     extractOfferFromImage: async () => ({ value: OFFER, costUsd: 0.01 }),
     planTopics: async () => ({ value: { topics: TOPICS }, costUsd: 0.03 }),
-    writeCardsForTopic: async (topic) => {
+    researchTopic: async (topic) => {
       if (options.failOnTopic === topic.slug) {
         throw new Error(`simulated provider outage on ${topic.slug}`);
       }
-      return cardsFor(topic);
+      return {
+        note: {
+          topicSlug: topic.slug,
+          content: `synthesized note for ${topic.slug} (section:section-${topic.slug}-0)`,
+          provenance: [{ kind: 'corpus' as const, ref: `section-${topic.slug}-0` }],
+        },
+        costUsd: 0.01,
+        sectionsFound: 4,
+        externalFound: 0,
+      };
+    },
+    writeFromNote: async (topic) => {
+      if (options.failOnWrite === topic.slug) {
+        throw new Error(`simulated provider outage on ${topic.slug}`);
+      }
+      const r = cardsFor(topic);
+      return { cards: r.cards, costUsd: 0.01, dropped: [] };
+    },
+    reviseRejected: async (topic, _note, items) => ({
+      cards: items.map((item, i) => ({
+        topicSlug: topic.slug,
+        kind: 'concept' as const,
+        front: `${item.front} (revised)`,
+        back: `fixed answer ${i}`,
+        provenance: [{ kind: 'corpus' as const, ref: `section-${topic.slug}-0` }],
+      })),
+      costUsd: 0.01,
+      dropped: [],
+    }),
+    rubricCheck: async (drafts) => {
+      if (options.rejectOnce && !rejected) {
+        rejected = true;
+        const idx = drafts.findIndex((d) => d.front === options.rejectOnce);
+        if (idx !== -1) {
+          return {
+            accepted: drafts.filter((_, i) => i !== idx),
+            rejected: [{ card: drafts[idx], reason: 'answer_leaks', note: 'front contains the answer' }],
+            costUsd: 0.005,
+          };
+        }
+      }
+      return { accepted: drafts, rejected: [], costUsd: 0.005 };
     },
     dedupDrafts: async (drafts) => {
       const dupes = new Set(options.duplicateFronts ?? []);
@@ -126,13 +176,18 @@ async function main() {
     const run = await loadRun(runId);
     check('ends awaiting_approval', run.status === 'awaiting_approval', run.status);
     check('passed through planning', phases.includes('planning'));
-    check('researched each topic', phases.filter((p) => p === 'researching').length >= 2);
+    check(
+      'research batched into a single step (3 topics, RESEARCH_BATCH=3)',
+      phases.filter((p) => p === 'researching').length <= 1,
+      phases.join('->'),
+    );
+    check('one writing step per topic', phases.filter((p) => p === 'writing').length >= 3, phases.join('->'));
     check('collected cards from all 3 topics', getDraftCards(run).length === 6, `${getDraftCards(run).length} cards`);
     check('accumulated cost', Number(run.cost_usd) > 0, `$${Number(run.cost_usd).toFixed(4)}`);
     check('offer was updated with extraction', true);
   }
 
-  console.log('\n== crash mid-run: state is checkpointed, not lost ==');
+  console.log('\n== crash during a research batch: siblings’ notes survive ==');
   let crashedRunId = '';
   {
     crashedRunId = await newRun();
@@ -142,8 +197,33 @@ async function main() {
     check('run marked failed', run.status === 'failed', run.status);
     check('error message preserved', (run.error ?? '').includes('simulated provider outage'), run.error ?? '(none)');
     check('plan survived the crash', run.plan !== null);
-    check('cards from topic 1 survived', getDraftCards(run).length === 2, `${getDraftCards(run).length} cards`);
+    // allSettled semantics: the two researchers that succeeded saved their notes
+    // before the step failed.
+    const { data: notes } = await db().from('scratchpad').select('topic_slug').eq('run_id', crashedRunId);
+    check('sibling notes survived the batch failure', (notes ?? []).length === 2, `${(notes ?? []).length} notes`);
     void outcome;
+  }
+
+  console.log('\n== crash during writing: earlier topics’ cards survive ==');
+  {
+    const runId = await newRun();
+    await runToCompletion(runId, stubDeps({ failOnWrite: 'typescript-generics' }));
+    const run = await loadRun(runId);
+    const step = (run.current_step ?? {}) as { failedAt?: { phase: string; topicIdx?: number } };
+
+    check('run marked failed', run.status === 'failed', run.status);
+    check('cards from topic 1 survived', getDraftCards(run).length === 2, `${getDraftCards(run).length} cards`);
+    check(
+      'failedAt points at the failing write step',
+      step.failedAt?.phase === 'writing' && step.failedAt?.topicIdx === 1,
+      JSON.stringify(step.failedAt),
+    );
+
+    await resumeRun(runId, stubDeps());
+    await runToCompletion(runId, stubDeps());
+    const resumed = await loadRun(runId);
+    check('write-crash resume completes', resumed.status === 'awaiting_approval', resumed.status);
+    check('no duplicate cards after resume', getDraftCards(resumed).length === 6, `${getDraftCards(resumed).length} cards`);
   }
 
   console.log('\n== resume: continues from checkpoint, does not restart ==');
@@ -207,13 +287,37 @@ async function main() {
     const failedRun = await loadRun(runId);
     const failedStep = (failedRun.current_step ?? {}) as { failedAt?: { phase: string; topicIdx?: number } };
     check('failedAt recorded', failedStep.failedAt?.phase === 'researching', JSON.stringify(failedStep.failedAt));
-    check('failedAt points at the failing topic', failedStep.failedAt?.topicIdx === 2, `topicIdx=${failedStep.failedAt?.topicIdx}`);
+    // All three topics fit one research batch, so the failing step starts at index 0.
+    check('failedAt points at the failing batch', failedStep.failedAt?.topicIdx === 0, `topicIdx=${failedStep.failedAt?.topicIdx}`);
 
     await resumeRun(runId, stubDeps());
     await runToCompletion(runId, stubDeps());
     const resumed = await loadRun(runId);
     check('resume completes to awaiting_approval', resumed.status === 'awaiting_approval', resumed.status);
     check('no duplicated topics after failedAt resume', getDraftCards(resumed).length === 6, `${getDraftCards(resumed).length} cards`);
+  }
+
+  console.log('\n== critic revision loop: reject -> revise -> re-critique -> accept ==');
+  {
+    const runId = await newRun();
+    await runToCompletion(runId, stubDeps({ rejectOnce: 'react-hooks question 1' }));
+    const run = await loadRun(runId);
+    const fronts = getDraftCards(run).map((c) => c.front);
+
+    check('ends awaiting_approval', run.status === 'awaiting_approval', run.status);
+    check('rejected card was revised', fronts.includes('react-hooks question 1 (revised)'), fronts.join(' | ').slice(0, 120));
+    check('original rejected front is gone', !fronts.includes('react-hooks question 1'));
+    check('card count preserved', fronts.length === 6, `${fronts.length} cards`);
+    const step = (run.current_step ?? {}) as { criticFlags?: unknown[] };
+    check('no critic flags after successful revision', !step.criticFlags);
+  }
+
+  console.log('\n== scratchpad holds notes; writing works from them ==');
+  {
+    const runId = await newRun();
+    await runToCompletion(runId, stubDeps());
+    const { data: notes } = await db().from('scratchpad').select('topic_slug').eq('run_id', runId);
+    check('one note per topic', (notes ?? []).length === TOPICS.length, `${(notes ?? []).length} notes`);
   }
 
   console.log('\n== resume on a healthy run is a no-op ==');

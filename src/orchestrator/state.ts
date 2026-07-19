@@ -28,6 +28,12 @@ export type CurrentStep = {
     linkedCount: number;
     linked: { front: string; existingCardId: string; existingFront: string; similarity: number }[];
   };
+  /** Set when the Critic sends cards back to the Writer (revision pass, ≤2 loops). */
+  revision?: {
+    rejected: { topicSlug: string; front: string; back: string; reason: string; note: string }[];
+  };
+  /** Cards still rejected when the loop cap was reached — surfaced to the reviewer. */
+  criticFlags?: { front: string; reason: string; note: string }[];
 };
 
 export async function createRun(offerId: string): Promise<RunRow> {
@@ -105,4 +111,39 @@ export async function appendDraftCards(runId: string, cards: DraftCard[]): Promi
   if (cards.length === 0) return;
   const run = await loadRun(runId);
   await saveRun(runId, { draftCards: [...getDraftCards(run), ...cards] });
+}
+
+// ===== Scratchpad (blackboard, Layer 4) =====
+
+import type { ResearchNote } from '@/agents/contracts';
+
+/** Persist a researcher's note. Idempotent per (run, topic): re-research overwrites. */
+export async function saveNote(runId: string, note: ResearchNote): Promise<void> {
+  const supabase = db();
+  // Delete-then-insert rather than upsert: scratchpad has no unique constraint on
+  // (run_id, topic_slug), and a re-run of a topic must replace its note, not stack.
+  await supabase.from('scratchpad').delete().eq('run_id', runId).eq('topic_slug', note.topicSlug);
+  const { error } = await supabase.from('scratchpad').insert({
+    run_id: runId,
+    topic_slug: note.topicSlug,
+    content: note.content,
+    provenance: note.provenance,
+  });
+  if (error) throw new Error(`saving note failed: ${error.message}`);
+}
+
+export async function getNote(runId: string, topicSlug: string): Promise<ResearchNote | null> {
+  const { data, error } = await db()
+    .from('scratchpad')
+    .select('topic_slug, content, provenance')
+    .eq('run_id', runId)
+    .eq('topic_slug', topicSlug)
+    .maybeSingle();
+  if (error) throw new Error(`loading note failed: ${error.message}`);
+  if (!data) return null;
+  return {
+    topicSlug: data.topic_slug,
+    content: data.content,
+    provenance: data.provenance as ResearchNote['provenance'],
+  };
 }

@@ -16,6 +16,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       phase?: string;
       topicIdx?: number;
       dedup?: { linkedCount: number; linked: { front: string; existingFront: string; similarity: number }[] };
+      criticFlags?: { front: string; reason: string; note: string }[];
     };
 
     return json({
@@ -28,6 +29,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       topicIdx: step.topicIdx ?? null,
       draftCards: getDraftCards(run),
       dedup: step.dedup ?? null,
+      criticFlags: step.criticFlags ?? null,
       updatedAt: run.updated_at,
     });
   } catch (error) {

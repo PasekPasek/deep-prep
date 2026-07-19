@@ -74,7 +74,16 @@ async function main() {
       planTopics: async () => {
         throw new Error('unreachable');
       },
-      writeCardsForTopic: async () => {
+      researchTopic: async () => {
+        throw new Error('unreachable');
+      },
+      writeFromNote: async () => {
+        throw new Error('unreachable');
+      },
+      reviseRejected: async () => {
+        throw new Error('unreachable');
+      },
+      rubricCheck: async () => {
         throw new Error('unreachable');
       },
       dedupDrafts: async () => ({ kept: [], linked: [] }),

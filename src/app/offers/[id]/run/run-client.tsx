@@ -21,6 +21,7 @@ type RunState = {
     linkedCount: number;
     linked: { front: string; existingFront: string; similarity: number }[];
   } | null;
+  criticFlags: { front: string; reason: string; note: string }[] | null;
 };
 
 const IN_FLIGHT = ['pending', 'extracting', 'planning', 'researching', 'writing', 'critiquing'];
@@ -250,6 +251,16 @@ export function RunClient({ initial }: { initial: RunState }) {
             <Kbd>K</Kbd> keep <Kbd>D</Kbd> discard <Kbd>E</Kbd> edit <Kbd>⌫</Kbd> back
           </span>
         </div>
+
+        {(() => {
+          const flag = run.criticFlags?.find((f) => f.front === current.front);
+          return flag ? (
+            <p className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
+              <span className="font-medium">Critic flagged this card</span> ({flag.reason.replace(/_/g, ' ')}):{' '}
+              {flag.note} — it could not be auto-fixed; keep, edit or discard it yourself.
+            </p>
+          ) : null;
+        })()}
 
         {editing ? (
           <div className="space-y-3 rounded-lg border border-t-[3px] border-t-red-800/60 bg-card p-5">
