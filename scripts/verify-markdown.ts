@@ -122,6 +122,16 @@ console.log('\n== code fences containing HTML are NOT stripped ==');
 const fencedHtml = parseMarkdownSections('# Ex\n\n```html\n<head><title>keep me</title></head>\n```\n');
 check('example HTML inside a fence survives', fencedHtml[0].content.includes('keep me'), fencedHtml[0].content.slice(0, 60));
 
+console.log('\n== repeated heading paths get unique part numbers ==');
+// Two separate sections with identical heading paths must not collide on (path, part) —
+// otherwise the batch upsert fails with "ON CONFLICT ... cannot affect row a second time".
+const repeated = normalizeSections(
+  parseMarkdownSections(`# Q1\n\n${'word '.repeat(120)}\n\n## Answer\n\n${'a '.repeat(120)}\n\n# Q2\n\n${'word '.repeat(120)}\n\n## Answer\n\n${'b '.repeat(120)}`),
+);
+const answerParts = repeated.filter((s) => s.headingPath.join('>').endsWith('Answer'));
+const keys = answerParts.map((s) => `${s.headingPath.join('>')}#${s.part}`);
+check('duplicate heading paths get distinct parts', new Set(keys).size === keys.length, keys.join(', '));
+
 console.log('\n== a --- rule mid-document is NOT frontmatter ==');
 const rule = parseMarkdownSections(`# Title\n\nBefore.\n\n---\n\nAfter.\n`);
 check('content preserved around horizontal rule', rule[0].content.includes('Before') && rule[0].content.includes('After'));
