@@ -448,7 +448,11 @@ supabase db push                     # schema + pgvector + HNSW + RPCs
 Ingest a corpus (idempotent; re-running updates in place):
 
 ```bash
-pnpm ingest --source github:yangshun/tech-interview-handbook
+# --include scopes a monorepo to its actual content. Without it this repo also
+# sweeps in its website's scaffolding READMEs — which then surface in retrieval
+# and become "grounded" cards about create-t3-app config files. Ask me how I know.
+pnpm ingest --source github:yangshun/tech-interview-handbook \
+            --include "^apps/website/(contents|blog)/"
 pnpm ingest --dir ./my-notes --name "my-notes" --license proprietary-personal \
             --include "^lessons/.*\.md$"
 pnpm ingest --source github:org/repo --dry-run   # parse + price, no spend
