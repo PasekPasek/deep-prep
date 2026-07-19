@@ -51,8 +51,11 @@ function cardsFor(topic: PlanTopic, n = 2): TopicResult {
   };
 }
 
-/** Stub agents. `failOnTopic` simulates a crash partway through the topic loop. */
-function stubDeps(options: { failOnTopic?: string } = {}): Deps {
+/**
+ * Stub agents. `failOnTopic` simulates a crash partway through the topic loop;
+ * `duplicateFronts` marks drafts the stub critic should absorb as duplicates.
+ */
+function stubDeps(options: { failOnTopic?: string; duplicateFronts?: string[] } = {}): Deps {
   return {
     fetchOfferText: async () => 'We need a senior React engineer with TypeScript.',
     extractOffer: async () => ({ value: OFFER, costUsd: 0.01 }),
@@ -62,6 +65,20 @@ function stubDeps(options: { failOnTopic?: string } = {}): Deps {
         throw new Error(`simulated provider outage on ${topic.slug}`);
       }
       return cardsFor(topic);
+    },
+    dedupDrafts: async (drafts) => {
+      const dupes = new Set(options.duplicateFronts ?? []);
+      return {
+        kept: drafts.filter((d) => !dupes.has(d.front)),
+        linked: drafts
+          .filter((d) => dupes.has(d.front))
+          .map((d) => ({
+            front: d.front,
+            existingCardId: '99999999-9999-9999-9999-999999999999',
+            existingFront: 'existing card',
+            similarity: 0.95,
+          })),
+      };
     },
   };
 }
@@ -165,6 +182,36 @@ async function main() {
       if (previous === undefined) delete process.env.RUN_BUDGET_USD;
       else process.env.RUN_BUDGET_USD = previous;
     }
+  }
+
+  console.log('\n== critic phase: duplicates absorbed, kept drafts survive ==');
+  {
+    const runId = await newRun();
+    await runToCompletion(runId, stubDeps({ duplicateFronts: ['react-hooks question 1'] }));
+    const run = await loadRun(runId);
+    const step = (run.current_step ?? {}) as {
+      dedup?: { linkedCount: number; linked: { front: string }[] };
+    };
+    check('ends awaiting_approval', run.status === 'awaiting_approval', run.status);
+    check('duplicate removed from drafts', getDraftCards(run).length === 5, `${getDraftCards(run).length} kept`);
+    check('dedup recorded on run', step.dedup?.linkedCount === 1, `linkedCount=${step.dedup?.linkedCount}`);
+    check('linked front preserved for HITL', step.dedup?.linked[0]?.front === 'react-hooks question 1');
+  }
+
+  console.log('\n== resume re-enters the failed phase exactly (failedAt) ==');
+  {
+    const runId = await newRun();
+    await runToCompletion(runId, stubDeps({ failOnTopic: 'graphql-basics' }));
+    const failedRun = await loadRun(runId);
+    const failedStep = (failedRun.current_step ?? {}) as { failedAt?: { phase: string; topicIdx?: number } };
+    check('failedAt recorded', failedStep.failedAt?.phase === 'researching', JSON.stringify(failedStep.failedAt));
+    check('failedAt points at the failing topic', failedStep.failedAt?.topicIdx === 2, `topicIdx=${failedStep.failedAt?.topicIdx}`);
+
+    await resumeRun(runId, stubDeps());
+    await runToCompletion(runId, stubDeps());
+    const resumed = await loadRun(runId);
+    check('resume completes to awaiting_approval', resumed.status === 'awaiting_approval', resumed.status);
+    check('no duplicated topics after failedAt resume', getDraftCards(resumed).length === 6, `${getDraftCards(resumed).length} cards`);
   }
 
   console.log('\n== resume on a healthy run is a no-op ==');

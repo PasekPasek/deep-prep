@@ -1,6 +1,7 @@
 import 'server-only';
 
-import type { ExtractedOffer, PlanTopic, RunStatus } from '@/agents/contracts';
+import type { DraftCard, ExtractedOffer, PlanTopic, RunStatus } from '@/agents/contracts';
+import { dedupDrafts, type DedupResult } from '@/agents/critic';
 import { extractOffer, fetchOfferText } from '@/agents/extractor';
 import { planTopics, writeCardsForTopic, type TopicResult } from '@/agents/generator';
 import { db } from '@/lib/db';
@@ -12,6 +13,7 @@ import {
   getPlan,
   loadRun,
   saveRun,
+  type CurrentStep,
   type RunRow,
 } from './state';
 
@@ -58,6 +60,7 @@ export type Deps = {
     meta: { runId: string },
   ) => Promise<{ value: { topics: PlanTopic[] }; costUsd: number }>;
   writeCardsForTopic: (topic: PlanTopic, meta: { runId: string }) => Promise<TopicResult>;
+  dedupDrafts: (drafts: DraftCard[], offerId: string) => Promise<DedupResult>;
 };
 
 export const defaultDeps: Deps = {
@@ -65,6 +68,7 @@ export const defaultDeps: Deps = {
   extractOffer: (text, meta) => extractOffer(text, meta),
   planTopics: (offer, meta) => planTopics(offer, meta),
   writeCardsForTopic: (topic, meta) => writeCardsForTopic(topic, meta),
+  dedupDrafts: (drafts, offerId) => dedupDrafts(drafts, offerId),
 };
 
 export type StepOutcome = {
@@ -102,6 +106,8 @@ export async function advanceRun(runId: string, deps: Deps = defaultDeps): Promi
       case 'researching':
       case 'writing':
         return await stepTopic(run, deps, step.topicIdx ?? 0);
+      case 'critiquing':
+        return await stepCritique(run, deps);
       case 'awaiting_approval':
         return { status: 'awaiting_approval', more: false, note: 'waiting for human review' };
       case 'done':
@@ -111,7 +117,7 @@ export async function advanceRun(runId: string, deps: Deps = defaultDeps): Promi
         throw new Error(`Unhandled phase: ${step.phase}`);
     }
   } catch (error) {
-    await fail(runId, error);
+    await fail(runId, error, step);
     return {
       status: 'failed',
       more: false,
@@ -124,12 +130,14 @@ function isTerminal(status: RunStatus): boolean {
   return status === 'done' || status === 'failed' || status === 'awaiting_approval';
 }
 
-async function fail(runId: string, error: unknown): Promise<void> {
+async function fail(runId: string, error: unknown, failedAt?: CurrentStep): Promise<void> {
   const message = error instanceof Error ? error.message : String(error);
   await saveRun(runId, {
     status: 'failed',
     error: message,
-    currentStep: { phase: 'failed' },
+    // Preserving the failing step lets resume re-enter exactly there instead of
+    // re-deriving the position from what happens to be persisted.
+    currentStep: { phase: 'failed', ...(failedAt ? { failedAt } : {}) },
   });
 }
 
@@ -212,13 +220,9 @@ async function stepTopic(run: RunRow, deps: Deps, topicIdx: number): Promise<Ste
 
   const topic = plan.topics[topicIdx];
   if (!topic) {
-    // All topics consumed.
-    const total = getDraftCards(run).length;
-    await saveRun(run.id, {
-      status: 'awaiting_approval',
-      currentStep: { phase: 'awaiting_approval' },
-    });
-    return { status: 'awaiting_approval', more: false, note: `${total} draft cards ready for review` };
+    // All topics consumed (resume edge case) — go through the critic.
+    await saveRun(run.id, { status: 'critiquing', currentStep: { phase: 'critiquing' } });
+    return { status: 'critiquing', more: true, note: 'all topics done, deduplicating' };
   }
 
   const result = await deps.writeCardsForTopic(topic, { runId: run.id });
@@ -226,9 +230,9 @@ async function stepTopic(run: RunRow, deps: Deps, topicIdx: number): Promise<Ste
 
   const isLast = topicIdx + 1 >= plan.topics.length;
   await saveRun(run.id, {
-    status: isLast ? 'awaiting_approval' : 'researching',
+    status: isLast ? 'critiquing' : 'researching',
     currentStep: isLast
-      ? { phase: 'awaiting_approval' }
+      ? { phase: 'critiquing' }
       : { phase: 'researching', topicIdx: topicIdx + 1 },
     addCostUsd: result.costUsd,
   });
@@ -239,7 +243,43 @@ async function stepTopic(run: RunRow, deps: Deps, topicIdx: number): Promise<Ste
       : `${topic.slug}: ${result.cards.length} cards from ${result.sectionsFound} sections` +
         (result.dropped.length > 0 ? ` (${result.dropped.length} dropped: unusable provenance)` : '');
 
-  return { status: isLast ? 'awaiting_approval' : 'researching', more: !isLast, note };
+  return { status: isLast ? 'critiquing' : 'researching', more: true, note };
+}
+
+/**
+ * Critic, Layer 2 shape: deterministic dedup. Drafts near-identical to saved cards
+ * are absorbed — the existing card gets linked to this offer and the draft never
+ * reaches the reviewer. What was absorbed is recorded on the run for the HITL view.
+ */
+async function stepCritique(run: RunRow, deps: Deps): Promise<StepOutcome> {
+  if (!run.offer_id) throw new Error('run has no offer_id');
+
+  const drafts = getDraftCards(run);
+  const { kept, linked } = await deps.dedupDrafts(drafts, run.offer_id);
+
+  await saveRun(run.id, {
+    status: 'awaiting_approval',
+    currentStep: {
+      phase: 'awaiting_approval',
+      dedup: {
+        linkedCount: linked.length,
+        linked: linked.map((l) => ({
+          front: l.front,
+          existingCardId: l.existingCardId,
+          existingFront: l.existingFront,
+          similarity: l.similarity,
+        })),
+      },
+    },
+    draftCards: kept,
+  });
+
+  const note =
+    linked.length === 0
+      ? `${kept.length} draft cards ready for review`
+      : `${kept.length} drafts for review, ${linked.length} duplicate(s) linked to existing cards`;
+
+  return { status: 'awaiting_approval', more: false, note };
 }
 
 /**
@@ -256,11 +296,18 @@ export async function resumeRun(runId: string, deps: Deps = defaultDeps): Promis
     return { status: run.status as RunStatus, more: !isTerminal(run.status as RunStatus) };
   }
 
+  const step = getCurrentStep(run);
+
+  // Preferred path: fail() recorded exactly where the run was. Re-enter there.
+  if (step.failedAt) {
+    await saveRun(runId, { status: step.failedAt.phase, currentStep: step.failedAt, error: null });
+    return advanceRun(runId, deps);
+  }
+
+  // Fallback for runs failed before failedAt existed: derive from what is persisted.
   const plan = getPlan(run);
   const cards = getDraftCards(run);
 
-  // current_step was overwritten with {phase:'failed'}, so the resume point is derived
-  // from what has been persisted: cards/plan exist -> resume mid-research.
   let phase: RunStatus = 'pending';
   let topicIdx = 0;
   if (plan && plan.topics.length > 0) {

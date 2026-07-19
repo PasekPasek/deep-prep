@@ -12,7 +12,11 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   try {
     const run = await loadRun(id);
     const plan = getPlan(run);
-    const step = (run.current_step ?? {}) as { phase?: string; topicIdx?: number };
+    const step = (run.current_step ?? {}) as {
+      phase?: string;
+      topicIdx?: number;
+      dedup?: { linkedCount: number; linked: { front: string; existingFront: string; similarity: number }[] };
+    };
 
     return json({
       id: run.id,
@@ -23,6 +27,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       topics: plan?.topics.map((t) => ({ slug: t.slug, name: t.name })) ?? [],
       topicIdx: step.topicIdx ?? null,
       draftCards: getDraftCards(run),
+      dedup: step.dedup ?? null,
       updatedAt: run.updated_at,
     });
   } catch (error) {

@@ -26,7 +26,10 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
   }
 
   const plan = getPlan(run);
-  const step = (run.current_step ?? {}) as { topicIdx?: number };
+  const step = (run.current_step ?? {}) as {
+    topicIdx?: number;
+    dedup?: { linkedCount: number; linked: { front: string; existingFront: string; similarity: number }[] };
+  };
 
   return (
     <RunClient
@@ -38,6 +41,7 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
         topics: plan?.topics.map((t) => ({ slug: t.slug, name: t.name })) ?? [],
         topicIdx: step.topicIdx ?? null,
         draftCards: getDraftCards(run),
+        dedup: step.dedup ?? null,
       }}
     />
   );

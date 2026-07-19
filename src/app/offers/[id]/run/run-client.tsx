@@ -17,6 +17,10 @@ type RunState = {
   topics: { slug: string; name: string }[];
   topicIdx: number | null;
   draftCards: DraftCard[];
+  dedup: {
+    linkedCount: number;
+    linked: { front: string; existingFront: string; similarity: number }[];
+  } | null;
 };
 
 const IN_FLIGHT = ['pending', 'extracting', 'planning', 'researching', 'writing', 'critiquing'];
@@ -218,11 +222,16 @@ export function RunClient({ initial }: { initial: RunState }) {
 
   // ---- empty result ----
   if (run.status === 'awaiting_approval' && drafts.length === 0) {
+    const absorbed = run.dedup?.linkedCount ?? 0;
     return (
       <div className="space-y-2">
-        <h1 className="text-2xl font-semibold tracking-tight">No cards produced</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">
+          {absorbed > 0 ? 'Nothing new to review' : 'No cards produced'}
+        </h1>
         <p className="text-sm text-muted-foreground">
-          The corpus has no material for the planned topics. Ingest more sources and run the offer again.
+          {absorbed > 0
+            ? `All ${absorbed} generated card${absorbed === 1 ? '' : 's'} already existed in your pool — they were linked to this offer instead of duplicated.`
+            : 'The corpus has no material for the planned topics. Ingest more sources and run the offer again.'}
         </p>
       </div>
     );
@@ -235,6 +244,7 @@ export function RunClient({ initial }: { initial: RunState }) {
         <div className="flex items-baseline justify-between text-sm text-muted-foreground">
           <span>
             {cursor + 1} of {drafts.length} · {kept} kept
+            {(run.dedup?.linkedCount ?? 0) > 0 && ` · ${run.dedup!.linkedCount} already in pool`}
           </span>
           <span className="hidden gap-3 sm:flex">
             <Kbd>K</Kbd> keep <Kbd>D</Kbd> discard <Kbd>E</Kbd> edit <Kbd>⌫</Kbd> back

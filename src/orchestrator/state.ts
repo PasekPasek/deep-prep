@@ -21,6 +21,13 @@ export type CurrentStep = {
   topicIdx?: number;
   /** Critic revision loops used so far (Layer 4). */
   loops?: number;
+  /** On failure: the step that was executing, so resume re-enters exactly there. */
+  failedAt?: CurrentStep;
+  /** Set by the critiquing phase: drafts absorbed into existing cards. */
+  dedup?: {
+    linkedCount: number;
+    linked: { front: string; existingCardId: string; existingFront: string; similarity: number }[];
+  };
 };
 
 export async function createRun(offerId: string): Promise<RunRow> {
