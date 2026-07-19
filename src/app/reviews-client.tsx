@@ -1,33 +1,28 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
-import { Badge } from '@/components/ui/badge';
+import { Flashcard, Kbd, type FlashcardData } from '@/components/flashcard';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader } from '@/components/ui/card';
+import type { IntervalPreview } from '@/lib/intervals';
 
-export type DueCard = {
+export type DueCard = FlashcardData & {
   cardId: string;
-  front: string;
-  back: string;
-  kind: string;
-  provenance: { kind: string; ref: string; label?: string }[] | null;
-  topic: { slug: string; name: string } | null;
   reps: number | null;
+  intervals: IntervalPreview;
 };
 
 const RATINGS = [
-  { value: 1, label: 'Again', hint: 'forgot' },
-  { value: 2, label: 'Hard', hint: 'struggled' },
-  { value: 3, label: 'Good', hint: 'recalled' },
-  { value: 4, label: 'Easy', hint: 'instant' },
+  { value: 1, key: '1', label: 'Again', interval: (c: DueCard) => c.intervals.again },
+  { value: 2, key: '2', label: 'Hard', interval: (c: DueCard) => c.intervals.hard },
+  { value: 3, key: '3', label: 'Good', interval: (c: DueCard) => c.intervals.good },
+  { value: 4, key: '4', label: 'Easy', interval: (c: DueCard) => c.intervals.easy },
 ] as const;
 
 /**
- * The daily queue: show front, reveal back, rate.
- *
- * The answer stays hidden until explicitly revealed — self-testing before seeing the
- * answer is the entire mechanism of spaced repetition, so the UI must not shortcut it.
+ * The daily loop, built to be driven without touching the mouse:
+ * Space reveals, 1–4 rates, the next card appears. Interval previews sit on the
+ * rating buttons so each choice says what it costs.
  */
 export function ReviewsClient({ initial }: { initial: DueCard[] }) {
   const [queue, setQueue] = useState(initial);
@@ -38,95 +33,114 @@ export function ReviewsClient({ initial }: { initial: DueCard[] }) {
 
   const current = queue[0];
 
-  async function rate(rating: number) {
-    if (!current || pending) return;
-    setPending(true);
-    setError(null);
-
-    try {
-      const response = await fetch('/api/reviews', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cardId: current.cardId, rating }),
-      });
-      if (!response.ok) {
-        const body = (await response.json().catch(() => ({}))) as { error?: string };
-        throw new Error(body.error ?? `HTTP ${response.status}`);
+  const rate = useCallback(
+    async (rating: number) => {
+      if (!current || pending) return;
+      setPending(true);
+      setError(null);
+      try {
+        const response = await fetch('/api/reviews', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cardId: current.cardId, rating }),
+        });
+        if (!response.ok) {
+          const body = (await response.json().catch(() => ({}))) as { error?: string };
+          throw new Error(body.error ?? `HTTP ${response.status}`);
+        }
+        setQueue((q) => q.slice(1));
+        setRevealed(false);
+        setDone((d) => d + 1);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'rating failed');
+      } finally {
+        setPending(false);
       }
-      setQueue((q) => q.slice(1));
-      setRevealed(false);
-      setDone((d) => d + 1);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'rating failed');
-    } finally {
-      setPending(false);
-    }
-  }
+    },
+    [current, pending],
+  );
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.target instanceof HTMLElement && /input|textarea/i.test(event.target.tagName)) return;
+      if (!current) return;
+
+      if (!revealed && (event.code === 'Space' || event.key === 'Enter')) {
+        event.preventDefault();
+        setRevealed(true);
+        return;
+      }
+      if (revealed) {
+        const rating = RATINGS.find((r) => r.key === event.key);
+        if (rating) {
+          event.preventDefault();
+          void rate(rating.value);
+        }
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [current, revealed, rate]);
 
   if (!current) {
     return (
-      <div className="space-y-2">
-        <h1 className="text-2xl font-semibold tracking-tight">Reviews</h1>
-        <p className="text-muted-foreground">
+      <div className="flex flex-col items-center gap-3 py-24 text-center">
+        <p className="font-serif text-2xl">
+          {done > 0 ? 'All done.' : 'Nothing due today.'}
+        </p>
+        <p className="text-sm text-muted-foreground">
           {done > 0
-            ? `Done for now — ${done} card${done === 1 ? '' : 's'} reviewed.`
-            : 'Nothing due. Approve some cards from an offer to start reviewing.'}
+            ? `${done} card${done === 1 ? '' : 's'} reviewed — come back when the next ones fall due.`
+            : 'Generate cards from an offer, approve them, and they will appear here.'}
         </p>
       </div>
     );
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-baseline justify-between">
-        <h1 className="text-2xl font-semibold tracking-tight">Reviews</h1>
-        <span className="text-sm text-muted-foreground">
-          {queue.length} due{done > 0 ? ` · ${done} done` : ''}
+    <div className="space-y-5">
+      <div className="flex items-baseline justify-between text-sm text-muted-foreground">
+        <span>
+          {done + 1} of {done + queue.length}
+        </span>
+        <span className="hidden gap-3 sm:flex">
+          {revealed ? (
+            <>
+              <Kbd>1</Kbd>–<Kbd>4</Kbd> rate
+            </>
+          ) : (
+            <>
+              <Kbd>Space</Kbd> show answer
+            </>
+          )}
         </span>
       </div>
 
-      <Card>
-        <CardHeader className="flex flex-row items-center gap-2">
-          {current.topic && <Badge variant="secondary">{current.topic.name}</Badge>}
-          <Badge variant="outline">{current.kind.replace('_', ' ')}</Badge>
-          {current.reps === 0 && <Badge>new</Badge>}
-        </CardHeader>
-        <CardContent className="space-y-6">
-          <p className="text-lg leading-relaxed whitespace-pre-wrap">{current.front}</p>
+      <Flashcard card={current} revealed={revealed} size="lg" />
 
-          {revealed ? (
-            <>
-              <div className="border-t pt-4">
-                <p className="leading-relaxed whitespace-pre-wrap">{current.back}</p>
-              </div>
+      {revealed ? (
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {RATINGS.map((r) => (
+            <Button
+              key={r.value}
+              variant={r.value === 3 ? 'default' : 'outline'}
+              size="lg"
+              disabled={pending}
+              onClick={() => rate(r.value)}
+              className="flex-col gap-0 py-6"
+            >
+              <span>{r.label}</span>
+              <span className="text-xs opacity-60">{r.interval(current)}</span>
+            </Button>
+          ))}
+        </div>
+      ) : (
+        <Button size="lg" className="w-full py-6" onClick={() => setRevealed(true)}>
+          Show answer
+        </Button>
+      )}
 
-              {current.provenance && current.provenance.length > 0 && (
-                <p className="text-xs text-muted-foreground">
-                  Source: {current.provenance.map((p) => p.label ?? p.ref).join(' · ')}
-                </p>
-              )}
-
-              <div className="flex flex-wrap gap-2">
-                {RATINGS.map((r) => (
-                  <Button
-                    key={r.value}
-                    variant={r.value === 3 ? 'default' : 'outline'}
-                    disabled={pending}
-                    onClick={() => rate(r.value)}
-                  >
-                    {r.label}
-                    <span className="ml-1 text-xs opacity-60">{r.hint}</span>
-                  </Button>
-                ))}
-              </div>
-            </>
-          ) : (
-            <Button onClick={() => setRevealed(true)}>Show answer</Button>
-          )}
-
-          {error && <p className="text-sm text-destructive">{error}</p>}
-        </CardContent>
-      </Card>
+      {error && <p className="text-sm text-destructive">{error}</p>}
     </div>
   );
 }

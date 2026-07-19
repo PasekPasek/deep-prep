@@ -1,12 +1,12 @@
 import { db } from '@/lib/db';
+import type { ReviewStateRow } from '@/lib/fsrs';
+import { intervalPreview } from '@/lib/intervals';
 
 import { ReviewsClient, type DueCard } from './reviews-client';
 
 /**
- * Home screen = today's review queue (CLAUDE.md §10: reviews are the daily loop).
- *
- * The queue is read server-side so the first paint already has cards; rating happens
- * client-side against /api/reviews.
+ * Home screen = today's review queue. Read server-side so the first paint already has
+ * cards; rating happens client-side against /api/reviews.
  */
 
 export const dynamic = 'force-dynamic';
@@ -14,7 +14,7 @@ export const dynamic = 'force-dynamic';
 export default async function ReviewsPage() {
   const { data, error } = await db()
     .from('review_state')
-    .select('due, reps, cards!inner(id, front, back, kind, provenance, status, topics(slug, name))')
+    .select('*, cards!inner(id, front, back, kind, provenance, status, topics(slug, name))')
     .lte('due', new Date().toISOString())
     .eq('cards.status', 'active')
     .order('due', { ascending: true })
@@ -29,6 +29,7 @@ export default async function ReviewsPage() {
     );
   }
 
+  const now = new Date();
   const due: DueCard[] = (data ?? []).map((row) => {
     const card = row.cards as unknown as {
       id: string;
@@ -38,14 +39,17 @@ export default async function ReviewsPage() {
       provenance: DueCard['provenance'];
       topics: { slug: string; name: string } | null;
     };
+    const { cards: _cards, ...state } = row;
+    void _cards;
     return {
       cardId: card.id,
       front: card.front,
       back: card.back,
       kind: card.kind,
       provenance: card.provenance,
-      topic: card.topics,
+      topic: card.topics?.name ?? null,
       reps: row.reps,
+      intervals: intervalPreview(state as ReviewStateRow, now),
     };
   });
 
