@@ -105,8 +105,12 @@ ${topic.concepts.map((c) => `- ${c}`).join('\n')}
 
 Write at most ${topic.estimatedCards} cards. Use topicSlug "${topic.slug}" on every card.
 
-Cite sources by their section id, shown as (section:<id>) in each heading below. Use
-kind "corpus" for these.
+Cite sources exactly as identified below:
+- corpus sections by their id, shown as (section:<id>) — use kind "corpus";
+- external sources by their full URL, shown as (url:<...>) — use the kind shown in
+  that source's header (web, stackoverflow, or context7).
+Cite only sources listed below; never invent an id or URL. Corpus sections are the
+preferred basis when both cover a concept.
 
 --- SOURCES ---
 ${sources}

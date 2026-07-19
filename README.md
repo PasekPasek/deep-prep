@@ -518,9 +518,12 @@ except `verify:retrieval`.
 ## Build layers
 
 - **Layer 1 — MVP (complete).** Ingest, offer → extract → plan → research → write, HITL
-  approval, FSRS reviews, library, auth, Langfuse.
-- **Layer 2.** Screenshot input (vision Extractor), embedding dedup in the Critic,
-  semantic library search, per-offer readiness.
+  approval, FSRS reviews, library, auth, Langfuse. Deployed on Vercel.
+- **Layer 2 — complete.** Embedding dedup in a `critiquing` phase (≥0.90 cosine →
+  existing card linked to the offer instead of a near-copy reaching review), Run again
+  with a single-flight guard, per-offer readiness (% of active cards FSRS has promoted
+  to Review), semantic library search over card embeddings, screenshot input (private
+  bucket → short-lived signed URL → vision extractor), and the guardrail set above.
 - **Layer 3.** Web fallback cascade (Tavily / Context7 / Stack Overflow) with per-topic
   budgets and external provenance.
 - **Layer 4.** True multi-agent split — Planner / parallel Researchers / Writer / Critic

@@ -47,6 +47,7 @@ function cardsFor(topic: PlanTopic, n = 2): TopicResult {
     outputTokens: 50,
     costUsd: 0.02,
     sectionsFound: 4,
+    externalFound: 0,
     dropped: [],
   };
 }

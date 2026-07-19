@@ -4,6 +4,12 @@ import { z } from 'zod';
 
 import { multilingualSearch } from '@/retrieval/multilingualSearch';
 import { renderForPrompt, toProvenance } from '@/retrieval/semanticSearch';
+import {
+  externalToProvenance,
+  renderExternalForPrompt,
+  webFallback,
+  type ExternalSource,
+} from '@/retrieval/webFallback';
 
 import { callAgent, type CallMeta } from './call';
 import { clampEstimatedCards, DraftCard, Plan, type ExtractedOffer, type PlanTopic } from './contracts';
@@ -19,6 +25,12 @@ import { PLANNER_SYSTEM, plannerPrompt, WRITER_SYSTEM, writerPrompt } from './pr
  */
 
 const TOP_K = 8;
+/**
+ * Corpus coverage below this many usable sections counts as "thin" and triggers the
+ * external cascade (§7.1 step 4). Corpus is always consulted first; the web fills
+ * gaps, it does not compete.
+ */
+const THIN_COVERAGE = 3;
 /**
  * Below this cosine similarity a "hit" is noise that would only mislead the Writer.
  *
@@ -69,6 +81,8 @@ export type TopicResult = {
   costUsd: number;
   /** Sections consulted, for the run log and for explaining an empty result. */
   sectionsFound: number;
+  /** External sources consulted when corpus coverage was thin (Layer 3). */
+  externalFound: number;
   dropped: { front: string; reason: string }[];
 };
 
@@ -87,43 +101,64 @@ export async function writeCardsForTopic(
     (h) => h.similarity >= MIN_SIMILARITY,
   );
 
-  if (hits.length === 0) {
+  // §7.1: corpus first, always. The cascade only fills thin coverage, and only up to
+  // its per-topic call budget.
+  let external: ExternalSource[] = [];
+  if (hits.length < THIN_COVERAGE) {
+    const fallback = await webFallback(topic);
+    external = fallback.sources;
+  }
+
+  if (hits.length === 0 && external.length === 0) {
     return {
       cards: [],
       inputTokens: 0,
       outputTokens: 0,
       costUsd: 0,
       sectionsFound: 0,
+      externalFound: 0,
       dropped: [],
     };
   }
+
+  const sourcesBlock = [
+    hits.length > 0 ? renderForPrompt(hits) : null,
+    external.length > 0
+      ? `--- EXTERNAL SOURCES (web) ---\n\n${renderExternalForPrompt(external)}`
+      : null,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
 
   const result = await callAgent({
     role: 'writer',
     schema: WriterOutput,
     system: WRITER_SYSTEM,
-    prompt: writerPrompt(topic, renderForPrompt(hits)),
+    prompt: writerPrompt(topic, sourcesBlock),
     meta: { ...meta, topicSlug: topic.slug },
   });
 
   // Provenance is enforced in code, not trusted from the model. A card may only cite
-  // sections that were actually retrieved for this topic — otherwise a hallucinated or
-  // copied id would produce a citation pointing at unrelated material, which is worse
-  // than no citation at all.
-  const allowed = new Map(hits.map((h) => [h.sectionId, h]));
+  // sources actually retrieved for this topic — corpus sections by id, external
+  // sources by their exact URL. Anything else is dropped with a reason.
+  const allowedSections = new Map(hits.map((h) => [h.sectionId, h]));
+  const allowedExternal = new Map(external.map((s) => [s.url, s]));
   const cards: DraftCard[] = [];
   const dropped: TopicResult['dropped'] = [];
 
   for (const card of result.value.cards) {
-    const cited = card.provenance
-      .map((p) => allowed.get(p.ref))
-      .filter((hit): hit is NonNullable<typeof hit> => hit !== undefined)
-      .map(toProvenance);
+    const cited = card.provenance.flatMap((p) => {
+      const section = allowedSections.get(p.ref);
+      if (section) return [toProvenance(section)];
+      const ext = allowedExternal.get(p.ref);
+      if (ext) return [externalToProvenance(ext)];
+      return [];
+    });
 
     if (cited.length === 0) {
       dropped.push({
         front: card.front,
-        reason: 'cited no section retrieved for this topic',
+        reason: 'cited no source retrieved for this topic',
       });
       continue;
     }
@@ -143,6 +178,7 @@ export async function writeCardsForTopic(
     outputTokens: result.outputTokens,
     costUsd: result.costUsd,
     sectionsFound: hits.length,
+    externalFound: external.length,
     dropped,
   };
 }

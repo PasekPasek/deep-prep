@@ -276,10 +276,16 @@ async function stepTopic(run: RunRow, deps: Deps, topicIdx: number): Promise<Ste
     addCostUsd: result.costUsd,
   });
 
+  const sourcesNote = [
+    result.sectionsFound > 0 ? `${result.sectionsFound} sections` : null,
+    result.externalFound > 0 ? `${result.externalFound} web sources` : null,
+  ]
+    .filter(Boolean)
+    .join(' + ');
   const note =
-    result.sectionsFound === 0
-      ? `${topic.slug}: no corpus material, 0 cards`
-      : `${topic.slug}: ${result.cards.length} cards from ${result.sectionsFound} sections` +
+    result.sectionsFound === 0 && result.externalFound === 0
+      ? `${topic.slug}: no material found anywhere, 0 cards`
+      : `${topic.slug}: ${result.cards.length} cards from ${sourcesNote}` +
         (result.dropped.length > 0 ? ` (${result.dropped.length} dropped: unusable provenance)` : '');
 
   return { status: isLast ? 'critiquing' : 'researching', more: true, note };
